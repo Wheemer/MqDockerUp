@@ -27,7 +27,21 @@ export default class DatabaseService {
                         return;
                     }
 
-                    logger.info('Database initialized successfully');
+                    this.db.run('DELETE FROM topics WHERE id NOT IN (SELECT MIN(id) FROM topics GROUP BY topic, containerId)', (err: Error | null) => {
+                        if (err) {
+                            logger.error(err.message);
+                            return;
+                        }
+
+                        this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS topics_topic_container_id_idx ON topics(topic, containerId)', (err: Error | null) => {
+                            if (err) {
+                                logger.error(err.message);
+                                return;
+                            }
+
+                            logger.info('Database initialized successfully');
+                        });
+                    });
                 });
             });
         });
@@ -52,7 +66,7 @@ export default class DatabaseService {
      * @param containerId The corresponding container id
      */
     public static async addTopic(topic: string, containerId: string) {
-        const stmt = this.db.prepare("INSERT INTO topics(topic, containerId) VALUES(?, ?)");
+        const stmt = this.db.prepare("INSERT OR IGNORE INTO topics(topic, containerId) VALUES(?, ?)");
         stmt.run(topic, containerId);
         stmt.finalize();
     }

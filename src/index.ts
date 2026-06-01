@@ -128,162 +128,100 @@ client.on('connect', async function () {
     startImageCheckingInterval();
   }
 
-  client.subscribe(`${config.mqtt.topic}/update`);
-  client.subscribe(`${config.mqtt.topic}/restart`);
-  client.subscribe(`${config.mqtt.topic}/start`);
-  client.subscribe(`${config.mqtt.topic}/stop`);
-  client.subscribe(`${config.mqtt.topic}/pause`);
-  client.subscribe(`${config.mqtt.topic}/unpause`);
-  client.subscribe(`${config.mqtt.topic}/manualUpdate`);
+  client.subscribe(`${config.mqtt.topic}/+/command/+`);
 });
 
 client.on('error', function (err) {
   logger.error('MQTT client connection error: ', err);
 });
-// Update-Handler for the /update message from MQTT
+const getCommandFromTopic = (topic: string): string | null => {
+  const commandTopicPrefix = `${config.mqtt.topic}/`;
+  const commandTopicMarker = "/command/";
+
+  if (!topic.startsWith(commandTopicPrefix)) {
+    return null;
+  }
+
+  const commandTopicSuffix = topic.substring(commandTopicPrefix.length);
+  const commandTopicMarkerIndex = commandTopicSuffix.lastIndexOf(commandTopicMarker);
+
+  if (commandTopicMarkerIndex === -1) {
+    return null;
+  }
+
+  const command = commandTopicSuffix.substring(commandTopicMarkerIndex + commandTopicMarker.length);
+  return command && !command.includes("/") ? command : null;
+};
+
+const parseCommandMessage = (message: any): any | null => {
+  try {
+    return JSON.parse(message);
+  } catch (error) {
+    if (error instanceof Error) {
+      logger.warn(`Failed to parse message: ${message}. Error: ${error.message}`);
+    } else {
+      logger.warn(`Failed to parse message: ${message}. Error: ${String(error)}`);
+    }
+
+    return null;
+  }
+};
+
 client.on("message", async (topic: string, message: any) => {
-  if (topic == `${config.mqtt.topic}/update`) {
-    let data;
-    try {
-      data = JSON.parse(message);
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.warn(`Failed to parse message: ${message}. Error: ${error.message}`);
-      } else {
-        logger.warn(`Failed to parse message: ${message}. Error: ${String(error)}`);
-      }
-      return;
-    }
+  const command = getCommandFromTopic(topic);
 
-    // Update-Handler for the /update message from MQTT
-    // This is triggered by the Home Assistant button in the UI to update a container
-    if (data?.containerId) {
-      const image = data?.image;
-      logger.info(`Got update message for ${image}`);
-      await DockerService.updateContainer(data?.containerId);
-      logger.info("Updated container");
-      await checkAndPublishContainerMessages();
-      await checkAndPublishImageUpdateMessages();
-    }
-  } else if (topic == `${config.mqtt.topic}/restart`) {
-    let data;
-    try {
-      data = JSON.parse(message);
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.warn(`Failed to parse message: ${message}. Error: ${error.message}`);
-      } else {
-        logger.warn(`Failed to parse message: ${message}. Error: ${String(error)}`);
-      }
-      return;
-    }
+  if (!command) {
+    return;
+  }
 
-    if (data?.containerId) {
-      logger.info(`Got restart message for ${data?.containerId}`);
-      await DockerService.restartContainer(data?.containerId);
-      logger.info("Restarted container");
-    }
+  const data = parseCommandMessage(message);
+
+  if (!data?.containerId) {
+    return;
+  }
+
+  if (command == "update") {
+    const image = data?.image;
+    logger.info(`Got update message for ${image}`);
+    await DockerService.updateContainer(data?.containerId);
+    logger.info("Updated container");
+    await checkAndPublishContainerMessages();
+    await checkAndPublishImageUpdateMessages();
+  } else if (command == "restart") {
+    logger.info(`Got restart message for ${data?.containerId}`);
+    await DockerService.restartContainer(data?.containerId);
+    logger.info("Restarted container");
 
     await checkAndPublishContainerMessages();
-  } else if (topic == `${config.mqtt.topic}/start`) {
-    let data;
-    try {
-      data = JSON.parse(message);
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.warn(`Failed to parse message: ${message}. Error: ${error.message}`);
-      } else {
-        logger.warn(`Failed to parse message: ${message}. Error: ${String(error)}`);
-      }
-      return;
-    }
-
-    if (data?.containerId) {
-      logger.info(`Got start message for ${data?.containerId}`);
-      await DockerService.startContainer(data?.containerId);
-      logger.info("Started container");
-    }
+  } else if (command == "start") {
+    logger.info(`Got start message for ${data?.containerId}`);
+    await DockerService.startContainer(data?.containerId);
+    logger.info("Started container");
 
     await checkAndPublishContainerMessages();
-  } else if (topic == `${config.mqtt.topic}/stop`) {
-    let data;
-    try {
-      data = JSON.parse(message);
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.warn(`Failed to parse message: ${message}. Error: ${error.message}`);
-      } else {
-        logger.warn(`Failed to parse message: ${message}. Error: ${String(error)}`);
-      }
-      return;
-    }
-
-    if (data?.containerId) {
-      logger.info(`Got stop message for ${data?.containerId}`);
-      await DockerService.stopContainer(data?.containerId);
-      logger.info("Stopped container");
-    }
+  } else if (command == "stop") {
+    logger.info(`Got stop message for ${data?.containerId}`);
+    await DockerService.stopContainer(data?.containerId);
+    logger.info("Stopped container");
 
     await checkAndPublishContainerMessages();
-  } else if (topic == `${config.mqtt.topic}/pause`) {
-    let data;
-    try {
-      data = JSON.parse(message);
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.warn(`Failed to parse message: ${message}. Error: ${error.message}`);
-      } else {
-        logger.warn(`Failed to parse message: ${message}. Error: ${String(error)}`);
-      }
-      return;
-    }
-
-    if (data?.containerId) {
-      logger.info(`Got pause message for ${data?.containerId}`);
-      await DockerService.pauseContainer(data?.containerId);
-      logger.info("Paused container");
-    }
+  } else if (command == "pause") {
+    logger.info(`Got pause message for ${data?.containerId}`);
+    await DockerService.pauseContainer(data?.containerId);
+    logger.info("Paused container");
 
     await checkAndPublishContainerMessages();
-  } else if (topic == `${config.mqtt.topic}/unpause`) {
-    let data;
-    try {
-      data = JSON.parse(message);
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.warn(`Failed to parse message: ${message}. Error: ${error.message}`);
-      } else {
-        logger.warn(`Failed to parse message: ${message}. Error: ${String(error)}`);
-      }
-      return;
-    }
-
-    if (data?.containerId) {
-      logger.info(`Got unpause message for ${data?.containerId}`);
-      await DockerService.unpauseContainer(data?.containerId);
-      logger.info("Unpaused container");
-    }
+  } else if (command == "unpause") {
+    logger.info(`Got unpause message for ${data?.containerId}`);
+    await DockerService.unpauseContainer(data?.containerId);
+    logger.info("Unpaused container");
 
     await checkAndPublishContainerMessages();
-  } else if (topic == `${config.mqtt.topic}/manualUpdate`) {
-    let data;
-    try {
-      data = JSON.parse(message);
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.warn(`Failed to parse message: ${message}. Error: ${error.message}`);
-      } else {
-        logger.warn(`Failed to parse message: ${message}. Error: ${String(error)}`);
-      }
-      return;
-    }
-
-    if (data?.containerId) {
-      logger.info(`Got manual update message for ${data?.containerId}`);
-      await DockerService.updateContainer(data?.containerId);
-      logger.info("Updated container");
-      await checkAndPublishContainerMessages();
-    }
+  } else if (command == "manualUpdate") {
+    logger.info(`Got manual update message for ${data?.containerId}`);
+    await DockerService.updateContainer(data?.containerId);
+    logger.info("Updated container");
+    await checkAndPublishContainerMessages();
   }
 });
 
