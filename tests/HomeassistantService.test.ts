@@ -91,6 +91,7 @@ describe("HomeassistantService discovery", () => {
           topic: "homeassistant/button/server_esphome/docker_manual_restart/config",
           payload: expect.objectContaining({
             command_topic: "mqdockerup/server_esphome/command/restart",
+            command_template: JSON.stringify({ containerId: "container-one", topicName: "server_esphome" }),
             unique_id: "server_esphome_manual_restart",
             device: expect.objectContaining({
               identifiers: ["server_esphome"],
@@ -101,6 +102,7 @@ describe("HomeassistantService discovery", () => {
           topic: "homeassistant/button/server_esphomefelishas/docker_manual_restart/config",
           payload: expect.objectContaining({
             command_topic: "mqdockerup/server_esphomefelishas/command/restart",
+            command_template: JSON.stringify({ containerId: "container-two", topicName: "server_esphomefelishas" }),
             unique_id: "server_esphomefelishas_manual_restart",
             device: expect.objectContaining({
               identifiers: ["server_esphomefelishas"],
@@ -111,12 +113,14 @@ describe("HomeassistantService discovery", () => {
           topic: "homeassistant/update/server_esphome/docker_update/config",
           payload: expect.objectContaining({
             command_topic: "mqdockerup/server_esphome/command/update",
+            payload_install: JSON.stringify({ containerId: "container-one", image: "ghcr.io/esphome/esphome", topicName: "server_esphome" }),
           }),
         }),
         expect.objectContaining({
           topic: "homeassistant/update/server_esphomefelishas/docker_update/config",
           payload: expect.objectContaining({
             command_topic: "mqdockerup/server_esphomefelishas/command/update",
+            payload_install: JSON.stringify({ containerId: "container-two", image: "ghcr.io/esphome/esphome", topicName: "server_esphomefelishas" }),
           }),
         }),
       ])

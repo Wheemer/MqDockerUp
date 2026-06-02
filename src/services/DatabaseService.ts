@@ -9,6 +9,18 @@ export default class DatabaseService {
         logger.info('Connected to the database.');
     });
 
+    private static run(statement: string, params: unknown[] = []): Promise<void> {
+        return new Promise((resolve, reject) => {
+            this.db.run(statement, params, (err: Error | null) => {
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve();
+                }
+            });
+        });
+    }
+
     /**
      * Initializes the database.
      * Creates the tables if they don't exist.
@@ -55,9 +67,7 @@ export default class DatabaseService {
      * @param tag The container tag
      */
     public static async addContainer(id: string, name: string, image: string, tag: string) {
-        const stmt = this.db.prepare("INSERT OR REPLACE INTO containers(id, name, image, tag) VALUES(?, ?, ?, ?)",);
-        stmt.run(id, name, image, tag);
-        stmt.finalize();
+        await this.run('INSERT OR REPLACE INTO containers(id, name, image, tag) VALUES(?, ?, ?, ?)', [id, name, image, tag]);
     }
 
     /**
@@ -66,9 +76,7 @@ export default class DatabaseService {
      * @param containerId The corresponding container id
      */
     public static async addTopic(topic: string, containerId: string) {
-        const stmt = this.db.prepare("INSERT OR IGNORE INTO topics(topic, containerId) VALUES(?, ?)");
-        stmt.run(topic, containerId);
-        stmt.finalize();
+        await this.run('INSERT OR IGNORE INTO topics(topic, containerId) VALUES(?, ?)', [topic, containerId]);
     }
 
     /**
@@ -125,8 +133,8 @@ export default class DatabaseService {
      * @param id The container id
      */
     public static async deleteContainer(id: string) {
-        this.db.run('DELETE FROM containers WHERE id = ?', [id]);
-        this.db.run('DELETE FROM topics WHERE containerId = ?', [id]);
+        await this.run('DELETE FROM containers WHERE id = ?', [id]);
+        await this.run('DELETE FROM topics WHERE containerId = ?', [id]);
     }
 
 

@@ -4,6 +4,7 @@ import DockerService from "./services/DockerService";
 import HomeassistantService from "./services/HomeassistantService";
 import DatabaseService from "./services/DatabaseService";
 import TimeService from "./services/TimeService";
+import MqttCommandService, {ContainerCommand, ContainerCommandPayload} from "./services/MqttCommandService";
 import logger from "./services/LoggerService"
 const _ = require('lodash');
 
@@ -128,101 +129,85 @@ client.on('connect', async function () {
     startImageCheckingInterval();
   }
 
-  client.subscribe(`${config.mqtt.topic}/+/command/+`);
+  client.subscribe(MqttCommandService.getCommandSubscription(config.mqtt.topic));
 });
 
 client.on('error', function (err) {
   logger.error('MQTT client connection error: ', err);
 });
-const getCommandFromTopic = (topic: string): string | null => {
-  const commandTopicPrefix = `${config.mqtt.topic}/`;
-  const commandTopicMarker = "/command/";
 
-  if (!topic.startsWith(commandTopicPrefix)) {
-    return null;
-  }
+type CommandHandler = (payload: ContainerCommandPayload) => Promise<void>;
 
-  const commandTopicSuffix = topic.substring(commandTopicPrefix.length);
-  const commandTopicMarkerIndex = commandTopicSuffix.lastIndexOf(commandTopicMarker);
-
-  if (commandTopicMarkerIndex === -1) {
-    return null;
-  }
-
-  const command = commandTopicSuffix.substring(commandTopicMarkerIndex + commandTopicMarker.length);
-  return command && !command.includes("/") ? command : null;
+const refreshContainersAfterCommand = async (): Promise<void> => {
+  await checkAndPublishContainerMessages();
 };
 
-const parseCommandMessage = (message: any): any | null => {
-  try {
-    return JSON.parse(message);
-  } catch (error) {
-    if (error instanceof Error) {
-      logger.warn(`Failed to parse message: ${message}. Error: ${error.message}`);
-    } else {
-      logger.warn(`Failed to parse message: ${message}. Error: ${String(error)}`);
-    }
-
-    return null;
-  }
-};
-
-client.on("message", async (topic: string, message: any) => {
-  const command = getCommandFromTopic(topic);
-
-  if (!command) {
-    return;
-  }
-
-  const data = parseCommandMessage(message);
-
-  if (!data?.containerId) {
-    return;
-  }
-
-  if (command == "update") {
-    const image = data?.image;
-    logger.info(`Got update message for ${image}`);
-    await DockerService.updateContainer(data?.containerId);
+const commandHandlers: Record<ContainerCommand, CommandHandler> = {
+  update: async (payload) => {
+    logger.info(`Got update message for ${payload.image || payload.containerId}`);
+    await DockerService.updateContainer(payload.containerId);
     logger.info("Updated container");
-    await checkAndPublishContainerMessages();
+    await refreshContainersAfterCommand();
     await checkAndPublishImageUpdateMessages();
-  } else if (command == "restart") {
-    logger.info(`Got restart message for ${data?.containerId}`);
-    await DockerService.restartContainer(data?.containerId);
+  },
+  restart: async (payload) => {
+    logger.info(`Got restart message for ${payload.containerId}`);
+    await DockerService.restartContainer(payload.containerId);
     logger.info("Restarted container");
-
-    await checkAndPublishContainerMessages();
-  } else if (command == "start") {
-    logger.info(`Got start message for ${data?.containerId}`);
-    await DockerService.startContainer(data?.containerId);
+    await refreshContainersAfterCommand();
+  },
+  start: async (payload) => {
+    logger.info(`Got start message for ${payload.containerId}`);
+    await DockerService.startContainer(payload.containerId);
     logger.info("Started container");
-
-    await checkAndPublishContainerMessages();
-  } else if (command == "stop") {
-    logger.info(`Got stop message for ${data?.containerId}`);
-    await DockerService.stopContainer(data?.containerId);
+    await refreshContainersAfterCommand();
+  },
+  stop: async (payload) => {
+    logger.info(`Got stop message for ${payload.containerId}`);
+    await DockerService.stopContainer(payload.containerId);
     logger.info("Stopped container");
-
-    await checkAndPublishContainerMessages();
-  } else if (command == "pause") {
-    logger.info(`Got pause message for ${data?.containerId}`);
-    await DockerService.pauseContainer(data?.containerId);
+    await refreshContainersAfterCommand();
+  },
+  pause: async (payload) => {
+    logger.info(`Got pause message for ${payload.containerId}`);
+    await DockerService.pauseContainer(payload.containerId);
     logger.info("Paused container");
-
-    await checkAndPublishContainerMessages();
-  } else if (command == "unpause") {
-    logger.info(`Got unpause message for ${data?.containerId}`);
-    await DockerService.unpauseContainer(data?.containerId);
+    await refreshContainersAfterCommand();
+  },
+  unpause: async (payload) => {
+    logger.info(`Got unpause message for ${payload.containerId}`);
+    await DockerService.unpauseContainer(payload.containerId);
     logger.info("Unpaused container");
-
-    await checkAndPublishContainerMessages();
-  } else if (command == "manualUpdate") {
-    logger.info(`Got manual update message for ${data?.containerId}`);
-    await DockerService.updateContainer(data?.containerId);
+    await refreshContainersAfterCommand();
+  },
+  manualUpdate: async (payload) => {
+    logger.info(`Got manual update message for ${payload.containerId}`);
+    await DockerService.updateContainer(payload.containerId);
     logger.info("Updated container");
-    await checkAndPublishContainerMessages();
+    await refreshContainersAfterCommand();
+  },
+};
+
+client.on("message", async (topic: string, message: Buffer) => {
+  const commandTopic = MqttCommandService.parseCommandTopic(config.mqtt.topic, topic);
+
+  if (!commandTopic) {
+    return;
   }
+
+  const payload = MqttCommandService.parseCommandPayload(message);
+
+  if (!payload) {
+    logger.warn(`Ignoring invalid command payload on ${topic}`);
+    return;
+  }
+
+  if (payload.topicName && payload.topicName !== commandTopic.containerTopic) {
+    logger.warn(`Ignoring command for ${payload.topicName} received on ${commandTopic.containerTopic}`);
+    return;
+  }
+
+  await commandHandlers[commandTopic.command](payload);
 });
 
 // Docker event handlers

@@ -11,6 +11,15 @@ const packageJson = require("../../package");
 const haLegacy = ConfigService.autoParseEnvVariable(config.mqtt?.haLegacy)
 const suggestedArea = config.mqtt?.suggestedArea ?? "Docker";
 
+type DiscoveryDevice = {
+  manufacturer: string;
+  model: string;
+  name: string;
+  sw_version: string;
+  sa: string;
+  identifiers: string[];
+};
+
 export default class HomeassistantService {
   private static readonly safeNameRegex = /[\/.:;,+*?@^$%#!&"'`|<>{}\[\]()-\s\u0000-\u001F\u007F]/g;
 
@@ -32,6 +41,42 @@ export default class HomeassistantService {
 
   private static getContainerCommandTopic(topicName: string, command: string): string {
     return `${config.mqtt.topic}/${topicName}/command/${command}`;
+  }
+
+  private static createDevice(image: string, tag: string, deviceName: string): DiscoveryDevice {
+    return {
+      manufacturer: "MqDockerUp",
+      model: `${image}:${tag}`,
+      name: deviceName,
+      sw_version: packageJson.version,
+      sa: suggestedArea,
+      identifiers: [this.formatSafeName(deviceName)],
+    };
+  }
+
+  private static createButtonPayload(
+    name: string,
+    image: string,
+    tag: string,
+    topicName: string,
+    command: string,
+    containerId: string,
+    icon: string,
+    payloadOn: string = command,
+    uniqueSuffix: string = command
+  ): object {
+    return {
+      name,
+      unique_id: `${topicName}_${uniqueSuffix}`,
+      command_topic: this.getContainerCommandTopic(topicName, command),
+      command_template: JSON.stringify({containerId, topicName}),
+      availability: {
+        topic: `${config.mqtt.topic}/availability`,
+      },
+      payload_on: payloadOn,
+      device: this.createDevice(image, tag, topicName),
+      icon,
+    };
   }
 
   /**
@@ -129,125 +174,20 @@ export default class HomeassistantService {
       this.publishMessage(client, topic, payload, {retain: true});
       await DatabaseService.addTopic(topic, container.Id);
 
-      // Container manual restart
-      topic = `${discoveryPrefix}/button/${topicName}/docker_manual_restart/config`;
-      payload = {
-        name: "Manual Restart",
-        unique_id: `${topicName}_manual_restart`,
-        command_topic: this.getContainerCommandTopic(topicName, "restart"),
-        command_template: JSON.stringify({containerId: container.Id}),
-        availability: {
-          topic: `${config.mqtt.topic}/availability`,
-        },
-        payload_on: "restart",
-        device: {
-          manufacturer: "MqDockerUp",
-          model: `${image}:${tag}`,
-          name: deviceName,
-          sw_version: packageJson.version,
-          sa: suggestedArea,
-          identifiers: [topicName],
-        },
-        icon: "mdi:restart",
-      };
-      this.publishMessage(client, topic, payload, {retain: true});
-      await DatabaseService.addTopic(topic, container.Id);
+      const buttons = [
+        {key: "manual_restart", name: "Manual Restart", command: "restart", icon: "mdi:restart"},
+        {key: "manual_start", name: "Start", command: "start", icon: "mdi:play"},
+        {key: "manual_stop", name: "Stop", command: "stop", icon: "mdi:stop"},
+        {key: "manual_pause", name: "Pause", command: "pause", icon: "mdi:pause"},
+        {key: "manual_unpause", name: "Unpause", command: "unpause", icon: "mdi:play-pause"},
+      ];
 
-      // Container manual start
-      topic = `${discoveryPrefix}/button/${topicName}/docker_manual_start/config`;
-      payload = {
-        name: "Start",
-        unique_id: `${topicName}_manual_start`,
-        command_topic: this.getContainerCommandTopic(topicName, "start"),
-        command_template: JSON.stringify({containerId: container.Id}),
-        availability: {
-          topic: `${config.mqtt.topic}/availability`,
-        },
-        payload_on: "start",
-        device: {
-          manufacturer: "MqDockerUp",
-          model: `${image}:${tag}`,
-          name: deviceName,
-          sw_version: packageJson.version,
-          sa: suggestedArea,
-          identifiers: [topicName],
-        },
-        icon: "mdi:play",
-      };
-      this.publishMessage(client, topic, payload, {retain: true});
-      await DatabaseService.addTopic(topic, container.Id);
-
-      // Container manual stop
-      topic = `${discoveryPrefix}/button/${topicName}/docker_manual_stop/config`;
-      payload = {
-        name: "Stop",
-        unique_id: `${topicName}_manual_stop`,
-        command_topic: this.getContainerCommandTopic(topicName, "stop"),
-        command_template: JSON.stringify({containerId: container.Id}),
-        availability: {
-          topic: `${config.mqtt.topic}/availability`,
-        },
-        payload_on: "stop",
-        device: {
-          manufacturer: "MqDockerUp",
-          model: `${image}:${tag}`,
-          name: deviceName,
-          sw_version: packageJson.version,
-          sa: suggestedArea,
-          identifiers: [topicName],
-        },
-        icon: "mdi:stop",
-      };
-      this.publishMessage(client, topic, payload, {retain: true});
-      await DatabaseService.addTopic(topic, container.Id);
-
-      // Container manual pause
-      topic = `${discoveryPrefix}/button/${topicName}/docker_manual_pause/config`;
-      payload = {
-        name: "Pause",
-        unique_id: `${topicName}_manual_pause`,
-        command_topic: this.getContainerCommandTopic(topicName, "pause"),
-        command_template: JSON.stringify({containerId: container.Id}),
-        availability: {
-          topic: `${config.mqtt.topic}/availability`,
-        },
-        payload_on: "pause",
-        device: {
-          manufacturer: "MqDockerUp",
-          model: `${image}:${tag}`,
-          name: deviceName,
-          sw_version: packageJson.version,
-          sa: suggestedArea,
-          identifiers: [topicName],
-        },
-        icon: "mdi:pause",
-      };
-      this.publishMessage(client, topic, payload, {retain: true});
-      await DatabaseService.addTopic(topic, container.Id);
-
-      // Container manual unpause
-      topic = `${discoveryPrefix}/button/${topicName}/docker_manual_unpause/config`;
-      payload = {
-        name: "Unpause",
-        unique_id: `${topicName}_manual_unpause`,
-        command_topic: this.getContainerCommandTopic(topicName, "unpause"),
-        command_template: JSON.stringify({containerId: container.Id}),
-        availability: {
-          topic: `${config.mqtt.topic}/availability`,
-        },
-        payload_on: "unpause",
-        device: {
-          manufacturer: "MqDockerUp",
-          model: `${image}:${tag}`,
-          name: deviceName,
-          sw_version: packageJson.version,
-          sa: suggestedArea,
-          identifiers: [topicName],
-        },
-        icon: "mdi:play-pause",
-      };
-      this.publishMessage(client, topic, payload, {retain: true});
-      await DatabaseService.addTopic(topic, container.Id);
+      for (const button of buttons) {
+        topic = `${discoveryPrefix}/button/${topicName}/docker_${button.key}/config`;
+        payload = this.createButtonPayload(button.name, image, tag, topicName, button.command, container.Id, button.icon, button.command, button.key);
+        this.publishMessage(client, topic, payload, {retain: true});
+        await DatabaseService.addTopic(topic, container.Id);
+      }
 
       // Docker Image
       topic = `${discoveryPrefix}/sensor/${topicName}/docker_image/config`;
@@ -275,27 +215,8 @@ export default class HomeassistantService {
 
 
       if (!IgnoreService.ignoreUpdates(container)) {
-        // Container manual update
         topic = `${discoveryPrefix}/button/${topicName}/docker_manual_update/config`;
-        payload = {
-          name: "Manual Update",
-          unique_id: `${topicName}_manual_update`,
-          command_topic: this.getContainerCommandTopic(topicName, "manualUpdate"),
-          command_template: JSON.stringify({containerId: container.Id}),
-          availability: {
-            topic: `${config.mqtt.topic}/availability`,
-          },
-          payload_on: "update",
-          device: {
-            manufacturer: "MqDockerUp",
-            model: `${image}:${tag}`,
-            name: deviceName,
-            sw_version: packageJson.version,
-            sa: suggestedArea,
-            identifiers: [topicName],
-          },
-          icon: "mdi:arrow-up-bold-circle",
-        };
+        payload = this.createButtonPayload("Manual Update", image, tag, topicName, "manualUpdate", container.Id, "mdi:arrow-up-bold-circle", "update", "manual_update");
         this.publishMessage(client, topic, payload, {retain: true});
         await DatabaseService.addTopic(topic, container.Id);
 
@@ -386,12 +307,7 @@ export default class HomeassistantService {
       payload_available: "Online",
       payload_not_available: "Offline",
       device: {
-        manufacturer: "MqDockerUp",
-        model: `${image}:${tag}`,
-        name: deviceName,
-        sw_version: packageJson.version,
-        sa: suggestedArea,
-        identifiers: [formatedDeviceName],
+        ...this.createDevice(image, tag, formatedDeviceName),
       },
       icon: icon,
     };
@@ -423,16 +339,11 @@ export default class HomeassistantService {
       payload_available: "Online",
       payload_not_available: "Offline",
       device: {
-        manufacturer: "MqDockerUp",
-        model: `${image}:${tag}`,
-        name: deviceName,
-        sw_version: packageJson.version,
-        sa: suggestedArea,
-        identifiers: [formatedDeviceName],
+        ...this.createDevice(image, tag, formatedDeviceName),
       },
       icon: "mdi:arrow-up-bold-circle",
       entity_picture: "https://github.com/MichelFR/MqDockerUp/raw/main/assets/logo_200x200.png",
-      payload_install: JSON.stringify({containerId: containerId, image: image}),
+      payload_install: JSON.stringify({containerId: containerId, image: image, topicName: formatedDeviceName}),
       command_topic: this.getContainerCommandTopic(formatedDeviceName, "update"),
     };
   }
