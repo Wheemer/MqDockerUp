@@ -130,6 +130,9 @@ client.on('connect', async function () {
   }
 
   client.subscribe(MqttCommandService.getCommandSubscription(config.mqtt.topic));
+  for (const legacyCommandTopic of MqttCommandService.getLegacyCommandSubscriptions(config.mqtt.topic)) {
+    client.subscribe(legacyCommandTopic);
+  }
 });
 
 client.on('error', function (err) {
@@ -189,25 +192,16 @@ const commandHandlers: Record<ContainerCommand, CommandHandler> = {
 };
 
 client.on("message", async (topic: string, message: Buffer) => {
-  const commandTopic = MqttCommandService.parseCommandTopic(config.mqtt.topic, topic);
+  const commandMessage = MqttCommandService.parseCommandMessage(config.mqtt.topic, topic, message);
 
-  if (!commandTopic) {
+  if (!commandMessage) {
+    if (MqttCommandService.isCommandTopic(config.mqtt.topic, topic)) {
+      logger.warn(`Ignored invalid MQTT command message on ${topic}`);
+    }
     return;
   }
 
-  const payload = MqttCommandService.parseCommandPayload(message);
-
-  if (!payload) {
-    logger.warn(`Ignoring invalid command payload on ${topic}`);
-    return;
-  }
-
-  if (payload.topicName && payload.topicName !== commandTopic.containerTopic) {
-    logger.warn(`Ignoring command for ${payload.topicName} received on ${commandTopic.containerTopic}`);
-    return;
-  }
-
-  await commandHandlers[commandTopic.command](payload);
+  await commandHandlers[commandMessage.command](commandMessage.payload);
 });
 
 // Docker event handlers

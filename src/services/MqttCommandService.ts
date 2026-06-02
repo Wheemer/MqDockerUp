@@ -18,6 +18,12 @@ export type ContainerCommandPayload = {
   topicName?: string;
 };
 
+export type ContainerCommandMessage = {
+  command: ContainerCommand;
+  payload: ContainerCommandPayload;
+  containerTopic?: string;
+};
+
 const containerCommands = [
   "update",
   "restart",
@@ -33,6 +39,14 @@ const commands: ReadonlySet<string> = new Set(containerCommands);
 export default class MqttCommandService {
   public static getCommandSubscription(topic: string): string {
     return `${topic}/+/command/+`;
+  }
+
+  public static getLegacyCommandSubscriptions(topic: string): string[] {
+    return containerCommands.map(command => `${topic}/${command}`);
+  }
+
+  public static getCommandTopic(rootTopic: string, containerTopic: string, command: ContainerCommand): string {
+    return `${rootTopic}/${containerTopic}/command/${command}`;
   }
 
   public static parseCommandTopic(rootTopic: string, topic: string): ContainerCommandTopic | null {
@@ -58,6 +72,58 @@ export default class MqttCommandService {
       containerTopic,
       command: command as ContainerCommand,
     };
+  }
+
+  public static parseLegacyCommandTopic(rootTopic: string, topic: string): ContainerCommand | null {
+    const prefix = `${rootTopic}/`;
+
+    if (!topic.startsWith(prefix)) {
+      return null;
+    }
+
+    const command = topic.substring(prefix.length);
+
+    return commands.has(command) ? command as ContainerCommand : null;
+  }
+
+  public static parseCommandMessage(rootTopic: string, topic: string, message: Buffer | string): ContainerCommandMessage | null {
+    const payload = this.parseCommandPayload(message);
+
+    if (!payload) {
+      return null;
+    }
+
+    const commandTopic = this.parseCommandTopic(rootTopic, topic);
+
+    if (commandTopic) {
+      if (!this.payloadMatchesCommandTopic(commandTopic, payload)) {
+        return null;
+      }
+
+      return {
+        ...commandTopic,
+        payload,
+      };
+    }
+
+    const legacyCommand = this.parseLegacyCommandTopic(rootTopic, topic);
+
+    if (!legacyCommand) {
+      return null;
+    }
+
+    return {
+      command: legacyCommand,
+      payload,
+    };
+  }
+
+  public static isCommandTopic(rootTopic: string, topic: string): boolean {
+    return this.parseCommandTopic(rootTopic, topic) !== null || this.parseLegacyCommandTopic(rootTopic, topic) !== null;
+  }
+
+  public static payloadMatchesCommandTopic(commandTopic: ContainerCommandTopic, payload: ContainerCommandPayload): boolean {
+    return payload.topicName === commandTopic.containerTopic;
   }
 
   public static parseCommandPayload(message: Buffer | string): ContainerCommandPayload | null {

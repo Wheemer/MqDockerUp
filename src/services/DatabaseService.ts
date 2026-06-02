@@ -110,6 +110,22 @@ export default class DatabaseService {
         });
     }
 
+    public static getTopicsForContainer(containerId: string): Promise<{ topic: string }[]> {
+        return new Promise((resolve, reject) => {
+            this.db.all('SELECT topic FROM topics WHERE containerId = ?', [containerId], (err: any, rows: { topic: string }[]) => {
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve(rows);
+                }
+            });
+        });
+    }
+
+    public static async deleteTopic(topic: string, containerId: string) {
+        await this.run('DELETE FROM topics WHERE topic = ? AND containerId = ?', [topic, containerId]);
+    }
+
 
     /**
  * Checks if an container exists in the database.
