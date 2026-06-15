@@ -1,19 +1,28 @@
-FROM node:lts-alpine
+FROM node:lts-alpine AS build
 
-# Install 'tini g++ make py3-pip'
-RUN apk add --no-cache tini g++ make py3-pip
+RUN apk add --no-cache g++ make py3-pip
 
-# Create and set the working directory
 WORKDIR /app
 
-# Copy package files
 COPY package*.json ./
-
-# Install dependencies
 RUN npm ci
 
-# Copy the rest of the application
 COPY . .
+RUN npm run build
+RUN npm prune --omit=dev
 
-# Specify the command to run
-CMD ["npm", "run", "start"]
+FROM node:lts-alpine
+
+RUN apk add --no-cache tini
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+COPY --from=build /app/package*.json ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/assets ./assets
+
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["node", "dist/index.js"]

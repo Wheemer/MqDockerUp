@@ -41,7 +41,7 @@ export default class HomeassistantService {
     return container.Name.startsWith("/") ? container.Name.substring(1) : container.Name;
   }
 
-  private static splitImageReference(reference: string | null | undefined): { image: string; tag: string; digest?: string } {
+  public static splitImageReference(reference: string | null | undefined): { image: string; tag: string; digest?: string } {
     if (!reference) {
       return {image: "unknown", tag: "latest"};
     }
@@ -122,6 +122,8 @@ export default class HomeassistantService {
       availability: {
         topic: `${config.mqtt.topic}/availability`,
       },
+      payload_available: "online",
+      payload_not_available: "offline",
       payload_press: payloadPress,
       device: this.createDevice(imageReference, topicName),
       icon,
@@ -372,8 +374,8 @@ export default class HomeassistantService {
           topic: `${config.mqtt.topic}/availability`,
         },
 
-      payload_available: "Online",
-      payload_not_available: "Offline",
+      payload_available: "online",
+      payload_not_available: "offline",
       device: {
         ...this.createDevice(imageReference, formatedDeviceName),
       },
@@ -404,8 +406,8 @@ export default class HomeassistantService {
           topic: `${config.mqtt.topic}/availability`,
         },
       ],
-      payload_available: "Online",
-      payload_not_available: "Offline",
+      payload_available: "online",
+      payload_not_available: "offline",
       device: {
         ...this.createDevice(imageReference, formatedDeviceName),
       },
@@ -448,7 +450,7 @@ export default class HomeassistantService {
       in_progress: false,
     }
 
-    if (update_percentage && in_progress) {
+    if (update_percentage !== null) {
       updatePayload.update_percentage = update_percentage;
       updatePayload.in_progress = in_progress;
     }
@@ -591,9 +593,8 @@ export default class HomeassistantService {
         };
 
         if (update_percentage !== null && remaining !== null) {
-          updatePayload.update.update_percentage = update_percentage;
           updatePayload.update_percentage = update_percentage;
-          updatePayload.update.remaining = remaining;
+          updatePayload.in_progress = state ? state !== "idle" : true;
         }
 
       }

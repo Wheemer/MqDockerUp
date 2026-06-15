@@ -2,11 +2,126 @@ import yaml from "yaml";
 import fs from "fs";
 import logger from "./LoggerService";
 
+type ConfigSection = Record<string, unknown>;
+
+export type AppConfig = {
+  main: {
+    interval: string;
+    imageUpdateInterval: string;
+    containerCheckInterval: string;
+    containerCheckOnChanges: boolean | string;
+    updateCheckInterval: string;
+    prefix: string;
+  };
+  mqtt: {
+    connectionUri: string;
+    topic: string;
+    discoveryPrefix: string;
+    suggestedArea: string;
+    clientId: string;
+    username: string;
+    password: string;
+    haLegacy: boolean | string;
+    connectTimeout: number | string;
+    protocolVersion: number | string;
+    maxReconnectDelay: number | string;
+  };
+  accessTokens: {
+    dockerhub: string;
+    github: string;
+  };
+  ignore: {
+    containers: string;
+    updates: string;
+  };
+  logs: {
+    level: string;
+  };
+};
+
+const defaultConfig: AppConfig = {
+  main: {
+    interval: "",
+    imageUpdateInterval: "",
+    containerCheckInterval: "5m",
+    containerCheckOnChanges: true,
+    updateCheckInterval: "",
+    prefix: "",
+  },
+  mqtt: {
+    connectionUri: "mqtt://localhost:1883",
+    topic: "mqdockerup",
+    discoveryPrefix: "homeassistant",
+    suggestedArea: "Docker",
+    clientId: "mqdockerup",
+    username: "ha",
+    password: "",
+    haLegacy: false,
+    connectTimeout: 60,
+    protocolVersion: 5,
+    maxReconnectDelay: 300,
+  },
+  accessTokens: {
+    dockerhub: "",
+    github: "",
+  },
+  ignore: {
+    containers: "",
+    updates: "",
+  },
+  logs: {
+    level: "info",
+  },
+};
+
 /**
  * ConfigService class that provides access to the application configuration settings.
  */
 export default class ConfigService {
+  private static cachedConfig: AppConfig | null = null;
 
+  private static cloneDefaults(): AppConfig {
+    return JSON.parse(JSON.stringify(defaultConfig));
+  }
+
+  private static mergeConfig(base: AppConfig, override: Partial<Record<keyof AppConfig, ConfigSection>>): AppConfig {
+    for (const sectionName of Object.keys(base) as (keyof AppConfig)[]) {
+      const sectionOverride = override?.[sectionName];
+      if (!sectionOverride || typeof sectionOverride !== "object") {
+        continue;
+      }
+
+      base[sectionName] = {
+        ...(base[sectionName] as ConfigSection),
+        ...sectionOverride,
+      } as never;
+    }
+
+    return base;
+  }
+
+  private static readConfigFile(): Partial<Record<keyof AppConfig, ConfigSection>> {
+    if (!fs.existsSync("config.yaml")) {
+      logger.warn("config.yaml not found, using defaults and environment variables.");
+      return {};
+    }
+
+    const parsed = yaml.parse(fs.readFileSync("config.yaml", "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  }
+
+  private static applyEnvironmentOverrides(config: AppConfig) {
+    for (const sectionName of Object.keys(defaultConfig) as (keyof AppConfig)[]) {
+      const section = config[sectionName] as ConfigSection;
+
+      for (const key of Object.keys(defaultConfig[sectionName])) {
+        const envKey = process.env[`${sectionName.toUpperCase()}_${key.toUpperCase()}`];
+        if (envKey !== undefined) {
+          section[key] = this.autoParseEnvVariable(envKey);
+        }
+      }
+    }
+  }
 
   /**
    * Attempts to automatically parse the given value as a boolean or number.
@@ -14,7 +129,7 @@ export default class ConfigService {
    * @param value The value to parse.
    * @returns The parsed value, or the original value if parsing failed.
    */
-  public static autoParseEnvVariable(value: string | any): boolean | number | string | undefined | any {
+  public static autoParseEnvVariable(value: unknown): boolean | number | string | undefined | unknown {
     if (value === undefined) return undefined;
 
     if (typeof value === "string") {
@@ -36,82 +151,14 @@ export default class ConfigService {
    * Gets the configuration settings.
    * @returns {any} The merged configuration settings.
    */
-  public static getConfig(): any {
+  public static getConfig(): AppConfig {
+    if (this.cachedConfig) {
+      return this.cachedConfig;
+    }
+
     try {
-      // Define the default values
-      const defaults = {
-        main: {
-          interval: "", // Deprecated in next version in favor of containerCheckInterval
-          imageUpdateInterval: "",
-          containerCheckInterval: "5m",
-          containerCheckOnChanges: true,
-          updateCheckInterval: "",
-          prefix: "",
-        },
-        mqtt: {
-          connectionUri: "mqtt://localhost:1883",
-          topic: "mqdockerup",
-          discoveryPrefix: "homeassistant",
-          suggestedArea: "Docker",
-          clientId: "mqdockerup",
-          username: "ha",
-          password: "",
-          haLegacy: false,
-          connectTimeout: 60,
-          protocolVersion: 5,
-          maxReconnectDelay: 300, // Maximum reconnect delay in seconds
-        },
-        accessTokens: {
-          dockerhub: "",
-          github: "",
-        },
-        ignore: {
-          containers: "",
-          updates: ""
-        },
-        logs: {
-          level: "info"
-        }
-      };
-
-      const config = yaml.parse(fs.readFileSync("config.yaml", "utf8"));
-
-      // Override the main values with the environment variables
-
-      for (const key of Object.keys(defaults.main)) {
-        const envKey = process.env[`MAIN_${key.toUpperCase()}`];
-        if (envKey !== undefined) {
-          config.main[key] = envKey;
-        }
-      }
-
-      for (const key of Object.keys(defaults.mqtt)) {
-        const envKey = process.env[`MQTT_${key.toUpperCase()}`];
-        if (envKey !== undefined) {
-          config.mqtt[key] = envKey;
-        }
-      }
-
-      for (const key of Object.keys(defaults.accessTokens)) {
-        const envKey = process.env[`ACCESSTOKENS_${key.toUpperCase()}`];
-        if (envKey !== undefined) {
-          config.accessTokens[key] = envKey;
-        }
-      }
-
-      for (const key of Object.keys(defaults.ignore)) {
-        const envKey = process.env[`IGNORE_${key.toUpperCase()}`];
-        if (envKey !== undefined) {
-          config.ignore[key] = envKey;
-        }
-      }
-
-      for (const key of Object.keys(defaults.logs)) {
-        const envKey = process.env[`LOGS_${key.toUpperCase()}`];
-        if (envKey !== undefined) {
-          config.logs[key] = envKey;
-        }
-      }
+      const config = this.mergeConfig(this.cloneDefaults(), this.readConfigFile());
+      this.applyEnvironmentOverrides(config);
 
       // #region "Deprecation Messages"
 
@@ -138,10 +185,12 @@ export default class ConfigService {
         config.main["updateCheckInterval"] = config.main["containerCheckInterval"];
       }
 
-      // Merge the config values with the default values
-      return Object.assign(defaults, config);
+      this.cachedConfig = config;
+      return config;
     } catch (e) {
       logger.error(e);
+      this.cachedConfig = this.cloneDefaults();
+      return this.cachedConfig;
     }
   }
 }

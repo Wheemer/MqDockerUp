@@ -5,10 +5,10 @@ import path from 'path';
 
 const packageJson = require("../../package");
 
-const logsDirectory = path.join(__dirname, 'logs');
+const logsDirectory = process.env.MQDOCKERUP_LOG_DIR || path.join(process.cwd(), 'data', 'logs');
 
 if (!fs.existsSync(logsDirectory)) {
-  fs.mkdirSync(logsDirectory);
+  fs.mkdirSync(logsDirectory, {recursive: true});
 }
 
 const logFormat = winston.format.combine(
@@ -58,8 +58,6 @@ const clearConsole = () => {
   console.clear();
   logger.info(`\n${versionAscii}\nStarting \x1b[36mMqDockerUp\x1b[0m V${packageJson.version} ... \n`);
 };
-
-clearConsole();
 
 export default logger;
 export { clearConsole };

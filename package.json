@@ -2,12 +2,14 @@
   "name": "mqdockerup",
   "version": "1.23.9-wheemer.3",
   "description": "Wheemer-maintained MqDockerUp build with container-scoped Home Assistant MQTT discovery and command routing.",
-  "main": "index.js",
+  "main": "dist/index.js",
   "scripts": {
+    "build": "tsc",
     "typecheck": "tsc --noEmit",
     "ci": "npm run typecheck && npm test -- --runInBand",
     "test": "jest",
-    "start": "ts-node src/index.ts"
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts"
   },
   "author": "Steve Reid (Wheemer)",
   "license": "MIT",
@@ -36,9 +38,9 @@
     "axios": "^1.16.1",
     "dockerode": "^5.0.0",
     "figlet": "^1.11.0",
-    "fs": "^0.0.1-security",
     "lodash": "^4.18.1",
     "mqtt": "^5.15.1",
+    "source-map-support": "^0.5.21",
     "sqlite3": "^6.0.1",
     "winston": "^3.19.0",
     "yaml": "^2.8.3"
@@ -48,16 +50,14 @@
     "@types/figlet": "^1.7.0",
     "@types/jest": "^30.0.0",
     "@types/lodash": "^4.17.24",
-    "install": "^0.13.0",
     "jest": "^30.3.0",
     "nodemon": "^3.1.14",
-    "npm": "^11.16.0",
-    "source-map-support": "^0.5.21",
     "ts-jest": "^29.4.11",
     "ts-node": "^10.9.2",
     "typescript": "^6.0.3"
   },
   "overrides": {
+    "@grpc/grpc-js": "^1.12.7",
     "picomatch": "4.0.4",
     "tar": "^7.5.11"
   }

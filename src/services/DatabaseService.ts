@@ -1,17 +1,37 @@
 import logger from "../services/LoggerService";
+import fs from "fs";
+import path from "path";
 const sqlite3 = require('sqlite3').verbose();
 
 export default class DatabaseService {
-    static db = new sqlite3.Database('./data/database.db', (err: any) => {
-        if (err) {
-            logger.error(err.message);
-        }
-        logger.info('Connected to the database.');
-    });
+    private static db: any | null = null;
+    private static initPromise: Promise<void> | null = null;
 
-    private static run(statement: string, params: unknown[] = []): Promise<void> {
+    private static getDatabasePath(): string {
+        return process.env.MQDOCKERUP_DATABASE_PATH || path.join(process.cwd(), 'data', 'database.db');
+    }
+
+    private static connect(): any {
+        if (this.db) {
+            return this.db;
+        }
+
+        const databasePath = this.getDatabasePath();
+        fs.mkdirSync(path.dirname(databasePath), {recursive: true});
+        this.db = new sqlite3.Database(databasePath, (err: any) => {
+            if (err) {
+                logger.error(err.message);
+                return;
+            }
+            logger.info('Connected to the database.');
+        });
+        return this.db;
+    }
+
+    private static async run(statement: string, params: unknown[] = []): Promise<void> {
+        await this.init();
         return new Promise((resolve, reject) => {
-            this.db.run(statement, params, (err: Error | null) => {
+            this.connect().run(statement, params, (err: Error | null) => {
                 if (err) {
                     reject(err);
                 } else {
@@ -25,38 +45,51 @@ export default class DatabaseService {
      * Initializes the database.
      * Creates the tables if they don't exist.
      */
-    static init() {
-        this.db.serialize(() => {
-            this.db.run('CREATE TABLE IF NOT EXISTS containers(id TEXT PRIMARY KEY, name TEXT, image TEXT, tag TEXT)', (err: Error | null) => {
+    static init(): Promise<void> {
+        if (this.initPromise) {
+            return this.initPromise;
+        }
+
+        this.initPromise = new Promise((resolve, reject) => {
+            this.connect().serialize(() => {
+                this.connect().run('CREATE TABLE IF NOT EXISTS containers(id TEXT PRIMARY KEY, name TEXT, image TEXT, tag TEXT)', (err: Error | null) => {
                 if (err) {
                     logger.error(err.message);
+                    reject(err);
                     return;
                 }
 
-                this.db.run('CREATE TABLE IF NOT EXISTS topics(id INTEGER PRIMARY KEY AUTOINCREMENT, topic TEXT, containerId TEXT)', (err: Error | null) => {
+                this.connect().run('CREATE TABLE IF NOT EXISTS topics(id INTEGER PRIMARY KEY AUTOINCREMENT, topic TEXT, containerId TEXT)', (err: Error | null) => {
                     if (err) {
                         logger.error(err.message);
+                        reject(err);
                         return;
                     }
 
-                    this.db.run('DELETE FROM topics WHERE id NOT IN (SELECT MIN(id) FROM topics GROUP BY topic, containerId)', (err: Error | null) => {
+                    this.connect().run('DELETE FROM topics WHERE id NOT IN (SELECT MIN(id) FROM topics GROUP BY topic, containerId)', (err: Error | null) => {
                         if (err) {
                             logger.error(err.message);
+                            reject(err);
                             return;
                         }
 
-                        this.db.run('CREATE UNIQUE INDEX IF NOT EXISTS topics_topic_container_id_idx ON topics(topic, containerId)', (err: Error | null) => {
+                        this.connect().run('CREATE UNIQUE INDEX IF NOT EXISTS topics_topic_container_id_idx ON topics(topic, containerId)', (err: Error | null) => {
                             if (err) {
                                 logger.error(err.message);
+                                reject(err);
                                 return;
                             }
 
                             logger.info('Database initialized successfully');
+                            resolve();
                         });
                     });
                 });
             });
         });
+        });
+
+        return this.initPromise;
     }
 
     /**
@@ -84,7 +117,8 @@ export default class DatabaseService {
   * @param callback The callback function to call with the results
   */
     public static async getContainers(callback: Function) {
-        this.db.all('SELECT * FROM containers', [], (err: any, rows: any) => {
+        await this.init();
+        this.connect().all('SELECT * FROM containers', [], (err: any, rows: any) => {
             callback(err, rows);
         });
     }
@@ -95,7 +129,8 @@ export default class DatabaseService {
      * @param callback The callback function to call with the results
      */
     public static async getContainer(id: string, callback: Function) {
-        this.db.get('SELECT * FROM containers WHERE id = ?', [id], (err: any, row: any) => {
+        await this.init();
+        this.connect().get('SELECT * FROM containers WHERE id = ?', [id], (err: any, row: any) => {
             callback(err, row);
         });
     }
@@ -105,14 +140,16 @@ export default class DatabaseService {
      * @param containerId The container id
      */
     public static async getTopics(containerId: string, callback: Function) {
-        this.db.all('SELECT * FROM topics WHERE containerId = ?', [containerId], (err: any, rows: any) => {
+        await this.init();
+        this.connect().all('SELECT * FROM topics WHERE containerId = ?', [containerId], (err: any, rows: any) => {
             callback(err, rows);
         });
     }
 
-    public static getTopicsForContainer(containerId: string): Promise<{ topic: string }[]> {
+    public static async getTopicsForContainer(containerId: string): Promise<{ topic: string }[]> {
+        await this.init();
         return new Promise((resolve, reject) => {
-            this.db.all('SELECT topic FROM topics WHERE containerId = ?', [containerId], (err: any, rows: { topic: string }[]) => {
+            this.connect().all('SELECT topic FROM topics WHERE containerId = ?', [containerId], (err: any, rows: { topic: string }[]) => {
                 if (err) {
                     reject(err);
                 } else {
@@ -133,15 +170,15 @@ export default class DatabaseService {
  * @return Promise<boolean>
  */
     public static containerExists(id: string): Promise<boolean> {
-        return new Promise((resolve, reject) => {
-            this.db.get('SELECT * FROM containers WHERE id = ?', [id], (err: any, container: any) => {
+        return this.init().then(() => new Promise((resolve, reject) => {
+            this.connect().get('SELECT * FROM containers WHERE id = ?', [id], (err: any, container: any) => {
                 if (err) {
                     reject(err);
                 } else {
                     resolve(!!container);
                 }
             });
-        });
+        }));
     }
 
     /**
@@ -158,14 +195,20 @@ export default class DatabaseService {
      * Closes the database connection.
      */
     public static async close() {
-        this.db.close((err: any) => {
-            if (err) {
-                logger.error(err.message);
-            }
-            logger.info('Closed the database connection.');
+        if (!this.db) {
+            return;
+        }
+
+        await new Promise<void>((resolve) => {
+            this.db.close((err: any) => {
+                if (err) {
+                    logger.error(err.message);
+                }
+                logger.info('Closed the database connection.');
+                this.db = null;
+                this.initPromise = null;
+                resolve();
+            });
         });
     }
 }
-
-// Call the init method to ensure the table is created when the class is loaded
-DatabaseService.init();

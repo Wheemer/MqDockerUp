@@ -97,6 +97,8 @@ describe("HomeassistantService discovery", () => {
           payload: expect.objectContaining({
             command_topic: "mqdockerup/server_esphome/command/restart",
             command_template: JSON.stringify({ containerId: "container-one", topicName: "server_esphome" }),
+            payload_available: "online",
+            payload_not_available: "offline",
             payload_press: "restart",
             unique_id: "server_esphome_manual_restart",
             device: expect.objectContaining({
@@ -264,6 +266,47 @@ describe("HomeassistantService discovery", () => {
       expect.stringContaining('"installed_version":"latest: abcdef123456"'),
       { retain: true }
     );
+  });
+
+  test("publishes availability values that match discovery payloads", async () => {
+    const client = { publish: jest.fn() };
+
+    await HomeassistantService.publishAvailability(client, true);
+    await HomeassistantService.publishAvailability(client, false);
+
+    expect(client.publish).toHaveBeenNthCalledWith(
+      1,
+      "mqdockerup/availability",
+      "online",
+      { retain: true }
+    );
+    expect(client.publish).toHaveBeenNthCalledWith(
+      2,
+      "mqdockerup/availability",
+      "offline",
+      { retain: true }
+    );
+  });
+
+  test("publishes non-legacy update progress without nested update payloads", async () => {
+    const container = {
+      Id: "container-one",
+      Name: "/progress-app",
+      Config: { Image: "ghcr.io/example/app:latest" },
+    } as unknown as ContainerInspectInfo;
+
+    (DockerService.getImageInfo as jest.Mock).mockResolvedValue({ RepoDigests: ["ghcr.io/example/app@sha256:old"] });
+    (DockerService.getImageNewDigest as jest.Mock).mockResolvedValue("newdigest");
+    (DockerService.getSourceRepo as jest.Mock).mockResolvedValue("https://github.com/example/app");
+
+    const client = { publish: jest.fn() };
+    await HomeassistantService.publishImageUpdateMessage(container, client, 42, 10, "installing");
+
+    const [, payload] = client.publish.mock.calls[0];
+    const parsed = JSON.parse(payload);
+    expect(parsed.update_percentage).toBe(42);
+    expect(parsed.in_progress).toBe(true);
+    expect(parsed.update).toBeUndefined();
   });
 
   test("records discovery topics for containers that already exist", async () => {

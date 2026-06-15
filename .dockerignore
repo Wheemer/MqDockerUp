@@ -1,4 +1,12 @@
 node_modules
 .git
+dist
+data
+coverage
+.nyc_output
+.npm
+.env
+.env.*
+config.yaml
 *.log
 *.db
