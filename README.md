@@ -1,16 +1,29 @@
-<!-- ![DALL·E 2023-10-17 21 46 04 - Vector concept featuring the MQTT and Docker logos as puzzle pieces fitting together  Lines or arrows indicate the flow of data and updates between th](https://github.com/MichelFR/MqDockerUp/assets/7061122/e0d28e1c-5478-4b99-a885-1f7298876956) -->
 <center><img alt="image" src="https://github.com/user-attachments/assets/cb264d67-7d72-4527-9a27-4599a6f9d1c2"></center>
 
 <br>
 
-[![Create Release](https://github.com/MichelFR/MqDockerUp/actions/workflows/create-release.yaml/badge.svg?branch=main)](https://github.com/MichelFR/MqDockerUp/actions/workflows/create-release.yaml)
+[![Create Release](https://github.com/Wheemer/MqDockerUp/actions/workflows/create-release.yaml/badge.svg?branch=main)](https://github.com/Wheemer/MqDockerUp/actions/workflows/create-release.yaml)
+[![Support](https://img.shields.io/badge/support-PayPal-blue)](https://www.paypal.me/wheemer)
 
-# MqDockerUp
-MqDockerUp is a tool that allows you to monitor and update your docker containers using MQTT and homeassistant. It can publish information about your containers, such as name, status, image, ports, etc., to an MQTT broker, and create or update corresponding entities in homeassistant. You can also send commands to start, stop, pause, unpause, restart, or remove your containers via MQTT or homeassistant. It even creates update entities in Homeassistant to make it easy to update your running containers. MqDockerUp is easy to set up and configure, and supports multiple platforms and architectures. With MqDockerUp, you can have a unified and convenient way to manage your docker containers from anywhere.
+# MqDockerUp Wheemer Edition
+
+MqDockerUp Wheemer Edition is a maintained Home Assistant focused build of MqDockerUp. It monitors Docker containers, publishes container state and update data to MQTT, creates Home Assistant discovery entities, and lets you start, stop, pause, restart, and update containers from MQTT or Home Assistant.
+
+This fork exists because Home Assistant needs stable per-container identity. If several containers use the same image and tag, image-based discovery can collapse them into one device or route commands to the wrong container. This edition scopes discovery, state topics, command topics, and update payloads by container so each container remains distinct and controllable.
+
+## What's awesome here
+
+- Container-scoped Home Assistant discovery for duplicate image/tag deployments.
+- Per-container MQTT command topics, with legacy flat command topics kept for compatibility.
+- Safer update/install routing so Home Assistant update entities target the intended container.
+- Stale discovery cleanup backed by recorded discovery topics.
+- Better image reference handling for registry ports and digest-pinned images.
+- Home Assistant MQTT discovery payload fixes, including button `payload_press` and matching availability payloads.
+- Focused tests for the collision, command-routing, cleanup, legacy payload, and image-reference cases.
 
 ## How it works
 
-MqDockerUp uses various Docker Registry APIs (DockerHub/GHCR/LSCR) to get information about containers and images. It then makes a request to the Docker Hub API to get information about the latest image tags. If there is a new version, it will publish the change to a specified MQTT broker.
+MqDockerUp uses Docker Registry APIs (DockerHub/GHCR/LSCR) to get information about containers and images. It then checks the latest image metadata and publishes state, discovery, and update changes to the configured MQTT broker.
 
 ## How to use
 
@@ -182,7 +195,7 @@ docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v your/path/data:/app/data/ \
   -v your/path/config.yaml:/app/config.yaml \
-  micrib/mqdockerup:latest
+  wheemer/mqdockerup:latest
 ```
 
 ### <a name="compose"></a>Docker Compose
@@ -190,7 +203,7 @@ docker run -d \
 ```yaml
 services:
   mqdockerup:
-    image: micrib/mqdockerup:latest
+    image: wheemer/mqdockerup:latest
     container_name: mqdockerup
     hostname: mqdockerup
     restart: always
@@ -238,4 +251,8 @@ You can use some of these labels on individual containers to apply to them the e
 
 ## Contribute
 
-This project is open source and contributions are welcome. If you have any ideas or suggestions, please open an issue or a pull request.
+This project is open source and contributions are welcome. If you are running the Wheemer Edition and find a Home Assistant discovery, update, or command-routing issue, please open an issue or pull request here.
+
+## Support
+
+If this fork saves you time or keeps your Home Assistant Docker dashboard sane, you can support the work through PayPal: https://www.paypal.me/wheemer

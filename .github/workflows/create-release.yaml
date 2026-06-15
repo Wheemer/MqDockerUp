@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE_NAME: micrib/mqdockerup
+  IMAGE_NAME: wheemer/mqdockerup
 
 jobs:
   create-release:

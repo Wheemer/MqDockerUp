@@ -32,6 +32,6 @@ I will look over your contribution and either merge it, request changes, or give
 
 ## Code of Conduct
 
-By participating in this project, you agree to abide by the MqDockerUp code of conduct. Please read [CODE_OF_CONDUCT.md]([link_to_code_of_conduct.md](https://github.com/MichelFR/MqDockerUp/blob/main/CODE_OF_CONDUCT.md)) for details.
+By participating in this project, you agree to abide by the MqDockerUp code of conduct. Please read [CODE_OF_CONDUCT.md](https://github.com/Wheemer/MqDockerUp/blob/main/CODE_OF_CONDUCT.md) for details.
 
 Thank you for your contribution!

@@ -37,7 +37,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: micrib/mqdockerup
+          images: wheemer/mqdockerup
           tags: |
             type=raw,value=${{ github.event.inputs.version }}
             type=raw,value=latest
