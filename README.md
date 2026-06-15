@@ -12,6 +12,16 @@ MqDockerUp Wheemer Edition is a maintained Home Assistant focused build of MqDoc
 
 This fork exists because Home Assistant needs stable per-container identity. If several containers use the same image and tag, image-based discovery can collapse them into one device or route commands to the wrong container. This edition scopes discovery, state topics, command topics, and update payloads by container so each container remains distinct and controllable.
 
+## Version 2.0.0
+
+Version 2.0.0 is the first major Wheemer-maintained release. It turns the fork into the supported line for Home Assistant Docker update dashboards, with duplicate-image deployments treated as first-class instead of edge cases.
+
+- Update entities now install against the intended container ID and publish progress without breaking modern Home Assistant update payloads.
+- Discovery, command, state, and update topics are scoped by container topic name, while legacy flat command topics still work for older setups.
+- Stale Home Assistant discovery topics are cleaned up without removing currently valid update entities.
+- Docker update recreation now waits for image pulls, recreates containers with their original runtime settings, starts the replacement, and refreshes discovery/state afterward.
+- Config, logging, database startup, Docker image builds, tests, dependencies, and GitHub Actions are maintained in this fork.
+
 ## What's awesome here
 
 - Container-scoped Home Assistant discovery for duplicate image/tag deployments.
@@ -30,9 +40,9 @@ MqDockerUp uses Docker Registry APIs (DockerHub/GHCR/LSCR) to get information ab
 
 ### Standalone application
 
-1. Clone the repository and install dependencies with`npm install`.
-2. Change the`config.yaml` file with your desired configuration.
-3. Run the project with`npm run start`.
+1. Clone the repository and install dependencies with `npm install`.
+2. Change the `config.yaml` file with your desired configuration.
+3. Run the project with `npm run start`.
 
 ### Docker
  * [`Docker run`](#run)
@@ -42,6 +52,8 @@ MqDockerUp uses Docker Registry APIs (DockerHub/GHCR/LSCR) to get information ab
   * Path required to access the docker API: `/var/run/docker.sock:/var/run/docker.sock` 
   * Path required to store the data (database.db): `your/path/data:/app/data/` 
   * Path required if you want to use yaml config: `your/path/config.yaml:/app/config.yaml`  
+
+Use `ghcr.io/wheemer/mqdockerup:2.0.0` to pin this release, or `ghcr.io/wheemer/mqdockerup:latest` to track the newest published release.
 
 ## Configuration
 
@@ -196,7 +208,7 @@ docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v your/path/data:/app/data/ \
   -v your/path/config.yaml:/app/config.yaml \
-  ghcr.io/wheemer/mqdockerup:latest
+  ghcr.io/wheemer/mqdockerup:2.0.0
 ```
 
 ### <a name="compose"></a>Docker Compose
@@ -204,7 +216,7 @@ docker run -d \
 ```yaml
 services:
   mqdockerup:
-    image: ghcr.io/wheemer/mqdockerup:latest
+    image: ghcr.io/wheemer/mqdockerup:2.0.0
     container_name: mqdockerup
     hostname: mqdockerup
     restart: always

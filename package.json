@@ -1,6 +1,6 @@
 {
   "name": "mqdockerup",
-  "version": "1.23.9-wheemer.3",
+  "version": "2.0.0",
   "description": "Wheemer-maintained MqDockerUp build with container-scoped Home Assistant MQTT discovery and command routing.",
   "main": "dist/index.js",
   "scripts": {
