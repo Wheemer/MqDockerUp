@@ -2,7 +2,8 @@
 
 <br>
 
-[![Create Release](https://github.com/Wheemer/MqDockerUp/actions/workflows/create-release.yaml/badge.svg?branch=main)](https://github.com/Wheemer/MqDockerUp/actions/workflows/create-release.yaml)
+[![CI](https://github.com/Wheemer/MqDockerUp/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/Wheemer/MqDockerUp/actions/workflows/ci.yaml)
+[![Release](https://github.com/Wheemer/MqDockerUp/actions/workflows/release.yaml/badge.svg)](https://github.com/Wheemer/MqDockerUp/actions/workflows/release.yaml)
 [![Support](https://img.shields.io/badge/support-PayPal-blue)](https://www.paypal.me/wheemer)
 
 # MqDockerUp Wheemer Edition
@@ -195,7 +196,7 @@ docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v your/path/data:/app/data/ \
   -v your/path/config.yaml:/app/config.yaml \
-  wheemer/mqdockerup:latest
+  ghcr.io/wheemer/mqdockerup:latest
 ```
 
 ### <a name="compose"></a>Docker Compose
@@ -203,7 +204,7 @@ docker run -d \
 ```yaml
 services:
   mqdockerup:
-    image: wheemer/mqdockerup:latest
+    image: ghcr.io/wheemer/mqdockerup:latest
     container_name: mqdockerup
     hostname: mqdockerup
     restart: always

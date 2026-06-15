@@ -1,7 +1,7 @@
 version: "3.9"
 services:
   mqdockerup:
-    image: wheemer/mqdockerup
+    image: ghcr.io/wheemer/mqdockerup
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
