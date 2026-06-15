@@ -2,8 +2,8 @@
 
 <br>
 
-[![CI](https://github.com/Wheemer/MqDockerUp/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/Wheemer/MqDockerUp/actions/workflows/ci.yaml)
-[![Release](https://github.com/Wheemer/MqDockerUp/actions/workflows/release.yaml/badge.svg)](https://github.com/Wheemer/MqDockerUp/actions/workflows/release.yaml)
+[![Tests](https://github.com/Wheemer/MqDockerUp/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/Wheemer/MqDockerUp/actions/workflows/test.yml)
+[![Release](https://github.com/Wheemer/MqDockerUp/actions/workflows/release.yml/badge.svg)](https://github.com/Wheemer/MqDockerUp/actions/workflows/release.yml)
 [![Support](https://img.shields.io/badge/support-PayPal-blue)](https://www.paypal.me/wheemer)
 
 # MqDockerUp Wheemer Edition

@@ -3,9 +3,21 @@ changelog:
     labels:
       - ignore-for-release
   categories:
-    - title: 🏕 Features
+    - title: Breaking changes
       labels:
-        - '*'
+        - breaking changes
+    - title: Home Assistant and MQTT
+      labels:
+        - home-assistant
+        - mqtt
+    - title: Docker and registry handling
+      labels:
+        - docker
+        - registry
+    - title: Features
+      labels:
+        - enhancement
+        - feature
       exclude:
         labels:
           - dependencies
@@ -17,28 +29,22 @@ changelog:
           - security
           - refactoring
           - breaking changes
-    - title: 🐛 Fixes 🔧
+    - title: Fixes
       labels:
-        - 'fix'
-    - title: 👒 Dependencies 📦
+        - fix
+        - bug
+    - title: Dependencies
       labels:
         - dependencies
-    - title: 🧹 Chores 🗑️
+    - title: Tests
       labels:
-        - chore
-    - title: 📝 Docs 📚
+        - test
+    - title: Documentation
       labels:
         - docs
-    - title: ✅ Tests 💯 
+    - title: Maintenance
       labels:
-        - test 
-    # Added categories below this line    
-    - title: 🚀 Performance ⚡️ 
-      labels:
-        - performance 
-    - title: 🔒 Security 🔐 
-      labels:
-        - security 
-    - title: 🛠️ Refactoring 💡 
-      labels:
-        - refactoring 
+        - chore
+        - refactoring
+        - performance
+        - security
