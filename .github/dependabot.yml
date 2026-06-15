@@ -4,14 +4,47 @@ updates:
     directory: /
     schedule:
       interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: America/St_Johns
     open-pull-requests-limit: 10
     groups:
-      npm-and-yarn:
+      npm-production:
+        dependency-type: production
         patterns:
           - "*"
+      npm-development:
+        dependency-type: development
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - npm
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+      day: monday
+      time: "04:15"
+      timezone: America/St_Johns
     open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - github-actions
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:30"
+      timezone: America/St_Johns
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - docker
