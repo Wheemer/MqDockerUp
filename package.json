@@ -58,6 +58,7 @@
   },
   "overrides": {
     "@grpc/grpc-js": "^1.12.7",
+    "js-yaml": "4.2.0",
     "picomatch": "4.0.4",
     "tar": "^7.5.11"
   }
