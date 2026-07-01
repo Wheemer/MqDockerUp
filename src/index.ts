@@ -42,6 +42,11 @@ export const mqttClient = client;
 
 // Check for new/old containers and publish updates
 const checkAndPublishContainerMessages = async (): Promise<void> => {
+  if (DockerService.updatingContainers.length > 0) {
+    logger.info(`Skipping container check while updating containers: ${DockerService.updatingContainers.join(", ")}`);
+    return;
+  }
+
   logger.info("Checking for removed containers...");
   const containers = await DockerService.listContainers();
   const runningContainerIds = containers.map(container => container.Id);
@@ -88,6 +93,11 @@ const checkAndPublishContainerMessages = async (): Promise<void> => {
 };
 
 const checkAndPublishImageUpdateMessages = async (): Promise<void> => {
+  if (DockerService.updatingContainers.length > 0) {
+    logger.info(`Skipping image update check while updating containers: ${DockerService.updatingContainers.join(", ")}`);
+    return;
+  }
+
   logger.info("Checking for image updates...");
   await HomeassistantService.publishImageUpdateMessages(client);
 

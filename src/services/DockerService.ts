@@ -31,6 +31,16 @@ export default class DockerService {
   public static SourceUrlCache = new Map<string, string>();
   public static VersionLabelCache = new Map<string, string | null>();
 
+  private static markContainerUpdating(containerId: string): void {
+    if (!this.updatingContainers.includes(containerId)) {
+      this.updatingContainers.push(containerId);
+    }
+  }
+
+  private static unmarkContainerUpdating(containerId: string): void {
+    this.updatingContainers = this.updatingContainers.filter((id) => id !== containerId);
+  }
+
   public static splitImageReference(reference: string | null | undefined): { image: string; tag: string; digest?: string } {
     if (!reference) {
       return { image: "unknown", tag: "latest" };
@@ -301,36 +311,41 @@ export default class DockerService {
         const layerProgress: Record<string, { current: number; total: number }> = {};
         let lastPublishTime = 0;
 
-        await DockerService.docker.pull(image, async (err: any, stream: any) => {
-          logger.info("Pulling image: " + image);
-          if (err) {
-            logger.error("Pulling Error: " + err);
-            return;
-          }
+        this.markContainerUpdating(containerId);
 
-          this.updatingContainers.push(containerId);
+        await new Promise<void>((resolve, reject) => {
+          DockerService.docker.pull(image, (err: any, stream: any) => {
+            logger.info("Pulling image: " + image);
+            if (err) {
+              logger.error("Pulling Error: " + err);
+              this.unmarkContainerUpdating(containerId);
+              reject(err);
+              return;
+            }
 
-          DockerService.docker.modem.followProgress(
-            stream,
-            async (err: any) => {
-              if (err) {
-                logger.error("Stream Error: " + err);
-                return;
-              }
+            DockerService.docker.modem.followProgress(
+              stream,
+              async (err: any) => {
+                if (err) {
+                  logger.error("Stream Error: " + err);
+                  this.unmarkContainerUpdating(containerId);
+                  reject(err);
+                  return;
+                }
 
-              logger.info("Image pulled successfully");
+                logger.info("Image pulled successfully");
 
-              const containerConfig: any = {
-                ...info,
-                ...info.Config,
-                ...info.HostConfig,
-                ...info.NetworkSettings,
-                // info.Name includes a leading slash, which causes the name
-                // to be dropped when recreating the container. Strip it so the
-                // container keeps its original name after an update.
-                name: info.Name.startsWith("/") ? info.Name.substring(1) : info.Name,
-                Image: image,
-              };
+                const containerConfig: any = {
+                  ...info,
+                  ...info.Config,
+                  ...info.HostConfig,
+                  ...info.NetworkSettings,
+                  // info.Name includes a leading slash, which causes the name
+                  // to be dropped when recreating the container. Strip it so the
+                  // container keeps its original name after an update.
+                  name: info.Name.startsWith("/") ? info.Name.substring(1) : info.Name,
+                  Image: image,
+                };
 
               // The container will start with a new ID
               containerConfig.Id = "";
@@ -356,15 +371,12 @@ export default class DockerService {
               logger.debug(`Container config prepared for update: ${JSON.stringify(containerConfig, null, 2)}`);
 
 
-              try {
-                await container.stop();
-                await container.remove();
+                try {
+                  await container.stop();
+                  await container.remove();
 
-                // Remove the old container ID from updatingContainers immediately after removal
-                this.updatingContainers = this.updatingContainers.filter((id) => id !== containerId);
-
-                const newContainer = await DockerService.docker.createContainer(containerConfig);
-                await newContainer.start();
+                  const newContainer = await DockerService.docker.createContainer(containerConfig);
+                  await newContainer.start();
 
                 // Get the new container info for MQTT updates
                 const newContainerInfo = await newContainer.inspect();
@@ -419,49 +431,52 @@ export default class DockerService {
                 await DatabaseService.deleteContainer(containerId);
                 await DatabaseService.addContainer(newContainerInfo.Id, newName, newImage, newTag);
 
-                // Republish update message to show as up-to-date
-                await HomeassistantService.publishImageUpdateMessage(newContainerInfo, mqttClient);
+                  // Republish update message to show as up-to-date
+                  await HomeassistantService.publishImageUpdateMessage(newContainerInfo, mqttClient);
 
-                return newContainer;
-              } catch (error) {
-                logger.error("Error starting container with new image");
-                logger.error(error);
-                throw error;
-              }
-            },
-            (event) => {
-              logger.debug(`Status: ${event.status}`);
-
-              if (event.id) {
-                const layer = layerProgress[event.id] || { current: 0, total: 0 };
-
-                if (event.progressDetail && (event.progressDetail.current || event.progressDetail.total)) {
-                  layer.current = event.progressDetail.current || layer.current;
-                  layer.total = event.progressDetail.total || layer.total;
+                  this.unmarkContainerUpdating(containerId);
+                  resolve();
+                } catch (error) {
+                  logger.error("Error starting container with new image");
+                  logger.error(error);
+                  this.unmarkContainerUpdating(containerId);
+                  reject(error);
                 }
+              },
+              (event) => {
+                logger.debug(`Status: ${event.status}`);
 
-                if (["Pull complete", "Download complete", "Already exists"].includes(event.status)) {
-                  layer.current = layer.total || layer.current;
-                }
+                if (event.id) {
+                  const layer = layerProgress[event.id] || { current: 0, total: 0 };
 
-                layerProgress[event.id] = layer;
+                  if (event.progressDetail && (event.progressDetail.current || event.progressDetail.total)) {
+                    layer.current = event.progressDetail.current || layer.current;
+                    layer.total = event.progressDetail.total || layer.total;
+                  }
 
-                const totalCurrent = Object.values(layerProgress).reduce((acc, l) => acc + l.current, 0);
-                const totalSize = Object.values(layerProgress).reduce((acc, l) => acc + l.total, 0);
+                  if (["Pull complete", "Download complete", "Already exists"].includes(event.status)) {
+                    layer.current = layer.total || layer.current;
+                  }
 
-                if (totalSize > 0) {
-                  const percentage = Math.min(100, Math.round((totalCurrent / totalSize) * 100));
-                  logger.debug(`Total progress: ${totalCurrent}/${totalSize} (${percentage}%)`);
+                  layerProgress[event.id] = layer;
 
-                  const now = Date.now();
-                  if (now - lastPublishTime >= 1000) {
-                    lastPublishTime = now;
-                    HomeassistantService.publishUpdateProgressMessage(info, mqttClient, percentage, true);
+                  const totalCurrent = Object.values(layerProgress).reduce((acc, l) => acc + l.current, 0);
+                  const totalSize = Object.values(layerProgress).reduce((acc, l) => acc + l.total, 0);
+
+                  if (totalSize > 0) {
+                    const percentage = Math.min(100, Math.round((totalCurrent / totalSize) * 100));
+                    logger.debug(`Total progress: ${totalCurrent}/${totalSize} (${percentage}%)`);
+
+                    const now = Date.now();
+                    if (now - lastPublishTime >= 1000) {
+                      lastPublishTime = now;
+                      HomeassistantService.publishUpdateProgressMessage(info, mqttClient, percentage, true);
+                    }
                   }
                 }
               }
-            }
-          );
+            );
+          });
         });
       }
     } catch (error: any) {
