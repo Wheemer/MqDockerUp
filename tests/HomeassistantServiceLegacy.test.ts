@@ -45,8 +45,9 @@ jest.mock("../src/services/DockerService", () => ({
 }));
 
 import { ContainerInspectInfo } from "dockerode";
-import DockerService from "../src/services/DockerService";
-import HomeassistantService from "../src/services/HomeassistantService";
+
+const DockerService = require("../src/services/DockerService").default;
+const HomeassistantService = require("../src/services/HomeassistantService").default;
 
 describe("HomeassistantService legacy update payload", () => {
   beforeEach(() => {

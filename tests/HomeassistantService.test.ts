@@ -64,9 +64,10 @@ jest.mock("../src/services/IgnoreService", () => ({
 }));
 
 import { ContainerInspectInfo } from "dockerode";
-import DockerService from "../src/services/DockerService";
-import DatabaseService from "../src/services/DatabaseService";
-import HomeassistantService from "../src/services/HomeassistantService";
+
+const DockerService = require("../src/services/DockerService").default;
+const DatabaseService = require("../src/services/DatabaseService").default;
+const HomeassistantService = require("../src/services/HomeassistantService").default;
 
 describe("HomeassistantService discovery", () => {
   beforeEach(() => {

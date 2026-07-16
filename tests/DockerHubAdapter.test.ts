@@ -5,7 +5,7 @@ jest.mock("axios", () => ({
   get: mockGet,
 }));
 
-import { DockerhubAdapter } from "../src/registry-factory/DockerhubAdapter";
+const { DockerhubAdapter } = require("../src/registry-factory/DockerhubAdapter");
 
 describe('DockerHubAdapter', () => {
   test('canHandleImage should return true for DockerHub images', () => {

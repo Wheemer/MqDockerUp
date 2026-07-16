@@ -5,7 +5,7 @@ jest.mock("axios", () => ({
   get: mockGet,
 }));
 
-import { LscrAdapter } from "../src/registry-factory/LscrAdapter";
+const { LscrAdapter } = require("../src/registry-factory/LscrAdapter");
 
 describe('LscrAdapter', () => {
   test('canHandleImage should return true for lscr images', () => {
