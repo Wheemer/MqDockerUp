@@ -1,7 +1,9 @@
-FROM node:lts-alpine
+FROM node:22-slim
 
-# Install 'tini g++ make py3-pip'
-RUN apk add --no-cache tini g++ make py3-pip
+# Install runtime init and native-module build tools.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tini g++ make python3 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Create and set the working directory
 WORKDIR /app
