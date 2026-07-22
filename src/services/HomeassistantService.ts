@@ -2,7 +2,7 @@ import DockerService from "./DockerService";
 import ConfigService from "./ConfigService";
 import DatabaseService from "./DatabaseService";
 import logger from "./LoggerService"
-import {ContainerInspectInfo} from "dockerode";
+import {ContainerInspectInfo, ImageInspectInfo} from "dockerode";
 import IgnoreService from "./IgnoreService";
 import MqttCommandService, {ContainerCommand} from "./MqttCommandService";
 
@@ -458,7 +458,15 @@ export default class HomeassistantService {
     logger.info(`Inspecting container ${container.Name || "unknown"}`);
 
     const identity = this.getContainerIdentity(container);
-    const imageInfo = await DockerService.getImageInfo(identity.imageReference);
+    let imageInfo: ImageInspectInfo;
+    try {
+      imageInfo = await DockerService.getImageInfo(identity.imageReference);
+    } catch (error: any) {
+      logger.warn(
+        `Could not inspect image ${identity.imageReference} for container ${identity.containerName}: ${error.message || error}`
+      );
+      return;
+    }
     const repoDigests = imageInfo?.RepoDigests || [];
     let currentDigest: string | null = null, newDigest: string | null = null;
 

@@ -314,6 +314,26 @@ describe("HomeassistantService discovery", () => {
     );
   });
 
+  test("skips update state when a stale container references a missing local image", async () => {
+    const container = {
+      Id: "container-one",
+      Name: "/orcaslicer",
+      Config: { Image: "lscr.io/linuxserver/orcaslicer:latest" },
+    } as unknown as ContainerInspectInfo;
+    const error: any = new Error("No such image: lscr.io/linuxserver/orcaslicer:latest");
+    error.statusCode = 404;
+
+    (DockerService.getImageInfo as jest.Mock).mockRejectedValue(error);
+
+    const client = { publish: jest.fn() };
+    await expect(
+      HomeassistantService.publishImageUpdateMessage(container, client)
+    ).resolves.toBeUndefined();
+
+    expect(DockerService.getImageNewDigest).not.toHaveBeenCalled();
+    expect(client.publish).not.toHaveBeenCalled();
+  });
+
   test("records discovery topics for containers that already exist", async () => {
     const containers = [
       {
