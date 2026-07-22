@@ -17,5 +17,9 @@ RUN npm ci
 # Copy the rest of the application
 COPY . .
 
+# Compile TypeScript ahead of runtime. The container runs plain Node from dist/
+# so runtime startup does not depend on ts-node internals.
+RUN npm run build
+
 # Specify the command to run
 CMD ["npm", "run", "start"]
