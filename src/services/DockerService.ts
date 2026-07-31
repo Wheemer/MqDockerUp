@@ -332,7 +332,17 @@ export default class DockerService {
       if (info) {
         const oldImageId = info.Image;
         const image = info.Config.Image;
-        const imageName = image.split(":")[0];
+        let targetImage = image;
+        const identity = DockerService.splitImageReference(image);
+
+        if (!identity.digest && identity.image !== "unknown") {
+          const updateInfo = await DockerService.getImageUpdateInfo(identity.image, identity.tag);
+
+          if (updateInfo.newDigest && updateInfo.tag !== identity.tag) {
+            targetImage = `${identity.image}:${updateInfo.tag}`;
+            logger.info(`Resolved update target image: ${targetImage}`);
+          }
+        }
 
         // Store layer progress here
         const layerProgress: Record<string, { current: number; total: number }> = {};
@@ -341,8 +351,8 @@ export default class DockerService {
         this.markContainerUpdating(containerId);
 
         await new Promise<void>((resolve, reject) => {
-          DockerService.docker.pull(image, (err: any, stream: any) => {
-            logger.info("Pulling image: " + image);
+          DockerService.docker.pull(targetImage, (err: any, stream: any) => {
+            logger.info("Pulling image: " + targetImage);
             if (err) {
               logger.error("Pulling Error: " + err);
               this.unmarkContainerUpdating(containerId);
@@ -371,7 +381,7 @@ export default class DockerService {
                   // to be dropped when recreating the container. Strip it so the
                   // container keeps its original name after an update.
                   name: info.Name.startsWith("/") ? info.Name.substring(1) : info.Name,
-                  Image: image,
+                  Image: targetImage,
                 };
 
               // The container will start with a new ID

@@ -144,11 +144,16 @@ describe("DockerService.updateContainer", () => {
   });
 
   afterEach(() => {
+    jest.restoreAllMocks();
     DockerService.docker = originalDocker;
   });
 
   it("waits for pull progress and replacement startup before resolving", async () => {
     let followProgressDone: Function | undefined;
+    const updateInfoSpy = jest.spyOn(DockerService, "getImageUpdateInfo").mockResolvedValue({
+      newDigest: "sha256:new-image",
+      tag: "latest",
+    });
     const oldContainer = {
       inspect: jest.fn().mockResolvedValue({
         Id: "old-container",
@@ -197,6 +202,7 @@ describe("DockerService.updateContainer", () => {
     });
 
     await Promise.resolve();
+    await Promise.resolve();
 
     expect(resolved).toBe(false);
     expect(newContainer.start).not.toHaveBeenCalled();
@@ -208,7 +214,74 @@ describe("DockerService.updateContainer", () => {
     expect(oldContainer.stop).toHaveBeenCalled();
     expect(oldContainer.remove).toHaveBeenCalled();
     expect(newContainer.start).toHaveBeenCalled();
+    expect(DockerService.docker.pull).toHaveBeenCalledWith("ghcr.io/esphome/esphome:latest", expect.any(Function));
     expect(resolved).toBe(true);
     expect(DockerService.updatingContainers).toEqual([]);
+    updateInfoSpy.mockRestore();
+  });
+
+  it("pulls the resolved newer release tag when updating a pinned image", async () => {
+    let followProgressDone: Function | undefined;
+    const updateInfoSpy = jest.spyOn(DockerService, "getImageUpdateInfo").mockResolvedValue({
+      newDigest: "sha256:frigate-0.17.2",
+      tag: "0.17.2",
+    });
+    const oldContainer = {
+      inspect: jest.fn().mockResolvedValue({
+        Id: "frigate-container",
+        Image: "sha256:frigate-0.17.1",
+        Name: "/frigate",
+        Config: {
+          Image: "ghcr.io/blakeblackshear/frigate:0.17.1",
+        },
+        HostConfig: {
+          Binds: [],
+        },
+        NetworkSettings: {},
+        Mounts: [],
+      }),
+      stop: jest.fn().mockResolvedValue(undefined),
+      remove: jest.fn().mockResolvedValue(undefined),
+    };
+    const newContainer = {
+      start: jest.fn().mockResolvedValue(undefined),
+      inspect: jest.fn().mockResolvedValue({
+        Id: "new-frigate-container",
+        Name: "/frigate",
+        Config: {
+          Image: "ghcr.io/blakeblackshear/frigate:0.17.2",
+        },
+      }),
+    };
+
+    DockerService.docker = {
+      getContainer: jest.fn().mockReturnValue(oldContainer),
+      pull: jest.fn((_image: string, cb: Function) => cb(null, {})),
+      modem: {
+        followProgress: jest.fn((_stream: any, done: Function) => {
+          followProgressDone = done;
+        }),
+      },
+      createContainer: jest.fn().mockResolvedValue(newContainer),
+      getImage: jest.fn().mockReturnValue({
+        remove: jest.fn((_options: any, cb: Function) => cb(null, {})),
+      }),
+    } as any;
+
+    const updatePromise = DockerService.updateContainer("frigate-container");
+
+    await Promise.resolve();
+    await Promise.resolve();
+    followProgressDone?.(null);
+    await updatePromise;
+
+    expect(DockerService.docker.pull).toHaveBeenCalledWith("ghcr.io/blakeblackshear/frigate:0.17.2", expect.any(Function));
+    expect(DockerService.docker.createContainer).toHaveBeenCalledWith(expect.objectContaining({
+      Image: "ghcr.io/blakeblackshear/frigate:0.17.2",
+    }));
+    expect(oldContainer.stop).toHaveBeenCalled();
+    expect(oldContainer.remove).toHaveBeenCalled();
+    expect(newContainer.start).toHaveBeenCalled();
+    updateInfoSpy.mockRestore();
   });
 });
