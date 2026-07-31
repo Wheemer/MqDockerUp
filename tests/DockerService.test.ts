@@ -8,6 +8,13 @@ jest.mock("../src/index", () => ({
 
 jest.mock("../src/registry-factory/ImageRegistryAdapterFactory");
 
+jest.mock("axios", () => ({
+  __esModule: true,
+  default: {
+    get: jest.fn(),
+  },
+}));
+
 jest.mock("../src/services/HomeassistantService", () => ({
   __esModule: true,
   default: {
@@ -27,7 +34,67 @@ jest.mock("../src/services/DatabaseService", () => ({
 }));
 
 import { ImageRegistryAdapterFactory } from "../src/registry-factory/ImageRegistryAdapterFactory";
+import axios from "axios";
 import DockerService from "../src/services/DockerService";
+
+describe("DockerService.getSourceRepo", () => {
+  let originalDocker: any;
+  const axiosGet = axios.get as jest.Mock;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    DockerService.SourceUrlCache.clear();
+    originalDocker = DockerService.docker;
+    DockerService.docker = {
+      getImage: jest.fn().mockReturnValue({
+        inspect: jest.fn().mockResolvedValue({
+          Config: {
+            Labels: {},
+          },
+        }),
+      }),
+    } as any;
+  });
+
+  afterEach(() => {
+    DockerService.docker = originalDocker;
+  });
+
+  it("does not query Docker Hub for images from another registry", async () => {
+    const result = await DockerService.getSourceRepo("ghcr.io/blakeblackshear/frigate", "stable");
+
+    expect(result).toBeNull();
+    expect(axiosGet).not.toHaveBeenCalled();
+  });
+
+  it("parses ordinary GitHub links from Docker Hub descriptions", async () => {
+    axiosGet.mockResolvedValue({
+      status: 200,
+      data: {
+        full_description: "Report issues at https://github.com/portainer/portainer/issues/new",
+      },
+    });
+
+    const result = await DockerService.getSourceRepo("portainer/portainer-ce", "latest");
+
+    expect(result).toBe("https://github.com/portainer/portainer");
+    expect(axiosGet).toHaveBeenCalledWith("https://hub.docker.com/v2/repositories/portainer/portainer-ce");
+  });
+
+  it("normalizes official Docker Hub image names before lookup", async () => {
+    axiosGet.mockResolvedValue({
+      status: 200,
+      data: {
+        full_description: "Maintained at https://github.com/nginxinc/docker-nginx",
+      },
+    });
+
+    const result = await DockerService.getSourceRepo("nginx", "latest");
+
+    expect(result).toBe("https://github.com/nginxinc/docker-nginx");
+    expect(axiosGet).toHaveBeenCalledWith("https://hub.docker.com/v2/repositories/library/nginx");
+  });
+});
 
 describe("DockerService.getImageVersionLabel", () => {
   beforeEach(() => {

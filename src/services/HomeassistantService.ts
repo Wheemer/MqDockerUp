@@ -270,7 +270,13 @@ export default class HomeassistantService {
       // await this.publishImageUpdateMessage(container, client);
 
       if (!IgnoreService.ignoreUpdates(container)) {
-        await this.publishImageUpdateMessage(container, client);
+        try {
+          await this.publishImageUpdateMessage(container, client);
+        } catch (error: any) {
+          logger.warn(
+            `Skipping update check for container ${container.Name?.substring(1) || container.Id}: ${error.message || error}`
+          );
+        }
       }
     }
   }
@@ -509,7 +515,7 @@ export default class HomeassistantService {
       if (sourceRepo) {
         logger.info(`Found source repository: ${sourceRepo}`);
       } else {
-        logger.warn(`Could not find source repository for ${identity.image}`);
+        logger.debug(`No source repository metadata found for ${identity.image}`);
       }
 
       let updatePayload: any;

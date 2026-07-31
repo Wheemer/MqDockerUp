@@ -28,7 +28,7 @@ export default class DockerService {
   public static docker = new Docker();
   public static events = new EventEmitter();
   public static updatingContainers: string[] = [];
-  public static SourceUrlCache = new Map<string, string>();
+  public static SourceUrlCache = new Map<string, string | null>();
   public static VersionLabelCache = new Map<string, string | null>();
 
   private static markContainerUpdating(containerId: string): void {
@@ -226,9 +226,13 @@ export default class DockerService {
    */
   public static async getSourceRepo(imageName: string, imageTag: string): Promise<string | null> {
     // Check cache first
-    const cachedUrl = DockerService.SourceUrlCache.get(imageName) ?? DockerService.SourceUrlCache.get(imageName + ":" + imageTag);
-    if (cachedUrl) {
-      return cachedUrl;
+    const imageTagCacheKey = imageName + ":" + imageTag;
+    if (DockerService.SourceUrlCache.has(imageTagCacheKey)) {
+      return DockerService.SourceUrlCache.get(imageTagCacheKey) ?? null;
+    }
+
+    if (DockerService.SourceUrlCache.has(imageName)) {
+      return DockerService.SourceUrlCache.get(imageName) ?? null;
     }
 
     // Try method 1: Check Docker labels
@@ -240,16 +244,22 @@ export default class DockerService {
     });
 
     if (labels && labels["org.opencontainers.image.source"]) {
-      const url = labels["org.opencontainers.image.source"];
-      DockerService.SourceUrlCache.set(imageName + ":" + imageTag, url);
+      const url = this.normalizeGithubUrl(labels["org.opencontainers.image.source"]);
+      DockerService.SourceUrlCache.set(imageTagCacheKey, url);
       return url;
     }
 
+    if (!this.isDockerHubImage(imageName)) {
+      DockerService.SourceUrlCache.set(imageTagCacheKey, null);
+      return null;
+    }
+
     // Try method 2: Check Docker Hub API
-    const dockerHubUrl = `https://hub.docker.com/v2/repositories/${imageName}`;
+    const dockerHubRepo = this.getDockerHubRepositoryPath(imageName);
+    const dockerHubUrl = `https://hub.docker.com/v2/repositories/${dockerHubRepo}`;
     const response = await axios.get(dockerHubUrl).catch((error) => {
-      if (error.response.status === 404) {
-        logger.info(`Repository not found: ${imageName}`);
+      if (error.response?.status === 404) {
+        logger.debug(`Docker Hub repository not found: ${dockerHubRepo}`);
       } else {
         logger.error("Error accessing Docker Hub API:", error);
       }
@@ -258,7 +268,15 @@ export default class DockerService {
     if (response && response.status === 200) {
       const data = response.data;
       const fullDescription = data.full_description || "";
-      if (!fullDescription.toLowerCase().includes("[github]")) {
+
+      const metadataUrl = this.normalizeGithubUrl(data.source_url || data.repository_url || "");
+      if (metadataUrl) {
+        DockerService.SourceUrlCache.set(imageName, metadataUrl);
+        return metadataUrl;
+      }
+
+      if (!fullDescription.toLowerCase().includes("github")) {
+        DockerService.SourceUrlCache.set(imageName, null);
         return null;
       }
 
@@ -271,6 +289,7 @@ export default class DockerService {
       }
     }
 
+    DockerService.SourceUrlCache.set(imageName, null);
     return null;
   }
 
@@ -586,8 +605,34 @@ export default class DockerService {
     const startIndex = fullDescription.indexOf("[github");
     const endIndex = fullDescription.indexOf("]", startIndex);
     if (startIndex !== -1 && endIndex !== -1) {
-      return fullDescription.slice(startIndex, endIndex).replace("[github]", "");
+      return this.normalizeGithubUrl(fullDescription.slice(startIndex, endIndex).replace("[github]", ""));
     }
+
+    const githubUrlMatch = fullDescription.match(/https:\/\/github\.com\/[^\s)\]]+/i);
+    if (githubUrlMatch) {
+      return this.normalizeGithubUrl(githubUrlMatch[0]);
+    }
+
     return null;
+  }
+
+  private static isDockerHubImage(imageName: string): boolean {
+    const firstSegment = imageName.split("/")[0];
+    return !firstSegment.includes(".") && !firstSegment.includes(":") && firstSegment !== "localhost";
+  }
+
+  private static getDockerHubRepositoryPath(imageName: string): string {
+    return imageName.includes("/") ? imageName : `library/${imageName}`;
+  }
+
+  private static normalizeGithubUrl(url: string): string | null {
+    const match = url.match(/https:\/\/github\.com\/([^/\s)\]]+)\/([^/\s)\]#?]+)/i);
+    if (!match) {
+      return null;
+    }
+
+    const owner = match[1];
+    const repo = match[2].replace(/\.git$/i, "");
+    return `https://github.com/${owner}/${repo}`;
   }
 }

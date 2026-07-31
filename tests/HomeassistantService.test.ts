@@ -334,6 +334,34 @@ describe("HomeassistantService discovery", () => {
     expect(client.publish).not.toHaveBeenCalled();
   });
 
+  test("keeps checking remaining containers when one update check fails", async () => {
+    const containers = [
+      {
+        Id: "bad-container",
+        Name: "/bad",
+        Config: { Image: "example/bad:latest" },
+      },
+      {
+        Id: "good-container",
+        Name: "/good",
+        Config: { Image: "example/good:latest" },
+      },
+    ] as unknown as ContainerInspectInfo[];
+
+    (DockerService.listContainers as jest.Mock).mockResolvedValue(containers);
+    const publishImageUpdateMessage = jest.spyOn(HomeassistantService, "publishImageUpdateMessage")
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(HomeassistantService.publishImageUpdateMessages({ publish: jest.fn() })).resolves.toBeUndefined();
+
+    expect(publishImageUpdateMessage).toHaveBeenCalledTimes(2);
+    expect(publishImageUpdateMessage).toHaveBeenNthCalledWith(1, containers[0], expect.any(Object));
+    expect(publishImageUpdateMessage).toHaveBeenNthCalledWith(2, containers[1], expect.any(Object));
+
+    publishImageUpdateMessage.mockRestore();
+  });
+
   test("records discovery topics for containers that already exist", async () => {
     const containers = [
       {
