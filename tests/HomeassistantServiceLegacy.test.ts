@@ -14,6 +14,7 @@ jest.mock("../src/services/DockerService", () => ({
   default: {
     getImageInfo: jest.fn(),
     getImageNewDigest: jest.fn(),
+    getImageUpdateInfo: jest.fn(),
     getImageVersionLabel: jest.fn(),
     getSourceRepo: jest.fn(),
     splitImageReference: jest.fn((reference: string | null | undefined) => {
@@ -64,7 +65,10 @@ describe("HomeassistantService legacy update payload", () => {
     (DockerService.getImageInfo as jest.Mock).mockResolvedValue({
       RepoDigests: ["ghcr.io/esphome/esphome@sha256:123456789abcdef"],
     });
-    (DockerService.getImageNewDigest as jest.Mock).mockResolvedValue("abcdef123456789");
+    (DockerService.getImageUpdateInfo as jest.Mock).mockResolvedValue({
+      newDigest: "abcdef123456789",
+      tag: "latest",
+    });
     (DockerService.getImageVersionLabel as jest.Mock).mockResolvedValue(null);
     (DockerService.getSourceRepo as jest.Mock).mockResolvedValue("https://github.com/esphome/esphome");
 

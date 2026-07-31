@@ -14,6 +14,8 @@ jest.mock("../src/services/DockerService", () => ({
     listContainers: jest.fn(),
     getImageInfo: jest.fn(),
     getImageNewDigest: jest.fn(),
+    getImageUpdateInfo: jest.fn(),
+    getImageVersionLabel: jest.fn(),
     getSourceRepo: jest.fn(),
     getImageRegistryName: jest.fn().mockResolvedValue("ghcr.io"),
     getCreatedBy: jest.fn().mockReturnValue("Docker"),
@@ -332,6 +334,40 @@ describe("HomeassistantService discovery", () => {
 
     expect(DockerService.getImageNewDigest).not.toHaveBeenCalled();
     expect(client.publish).not.toHaveBeenCalled();
+  });
+
+  test("publishes an available update when a semver-pinned GHCR image has a newer release tag", async () => {
+    const container = {
+      Id: "frigate-container",
+      Name: "/frigate",
+      Config: { Image: "ghcr.io/blakeblackshear/frigate:0.17.1" },
+    } as unknown as ContainerInspectInfo;
+
+    (DockerService.getImageInfo as jest.Mock).mockResolvedValue({
+      RepoDigests: ["ghcr.io/blakeblackshear/frigate@sha256:currentdigest"],
+      Config: { Labels: {} },
+    });
+    (DockerService.getImageUpdateInfo as jest.Mock).mockResolvedValue({
+      newDigest: "newdigest",
+      tag: "0.17.2",
+    });
+    (DockerService.getImageVersionLabel as jest.Mock).mockResolvedValue(null);
+    (DockerService.getSourceRepo as jest.Mock).mockResolvedValue("https://github.com/blakeblackshear/frigate");
+
+    const client = { publish: jest.fn() };
+    await HomeassistantService.publishImageUpdateMessage(container, client);
+
+    const updateCall = client.publish.mock.calls.find(([topic]: [string]) => topic === "mqdockerup/server_frigate/update");
+    expect(updateCall).toBeDefined();
+    const payload = JSON.parse(updateCall[1]);
+
+    expect(payload.installed_version).toBe("0.17.1: currentdiges");
+    expect(payload.latest_version).toBe("0.17.2: newdigest");
+    expect(DockerService.getImageVersionLabel).toHaveBeenCalledWith(
+      "ghcr.io/blakeblackshear/frigate",
+      "0.17.2",
+      "newdigest"
+    );
   });
 
   test("keeps checking remaining containers when one update check fails", async () => {

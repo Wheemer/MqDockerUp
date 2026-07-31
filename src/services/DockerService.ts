@@ -153,15 +153,23 @@ export default class DockerService {
    * @returns A promise that resolves to a string containing the new digest.
    */
   public static async getImageNewDigest(imageName: string, tag: string): Promise<string | null> {
+    const updateInfo = await this.getImageUpdateInfo(imageName, tag);
+    return updateInfo.newDigest;
+  }
+
+  public static async getImageUpdateInfo(imageName: string, tag: string): Promise<{ newDigest: string | null; tag: string }> {
     try {
       let adapter = ImageRegistryAdapterFactory.getAdapter(imageName, tag);
       let response = await adapter.checkForNewDigest();
 
-      return response.newDigest;
+      return {
+        newDigest: response.newDigest,
+        tag: response.tag || tag,
+      };
     } catch (error: any) {
       logger.error(imageName, tag);
       logger.error(error);
-      return null;
+      return { newDigest: null, tag };
     }
   }
 

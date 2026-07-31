@@ -26,7 +26,7 @@ export abstract class ImageRegistryAdapter {
         return headers;
     }
 
-    abstract checkForNewDigest(): Promise<{ newDigest: string; }>;
+    abstract checkForNewDigest(): Promise<{ newDigest: string | null; tag?: string; }>;
 
     abstract getVersionLabel(): Promise<string | null>;
 

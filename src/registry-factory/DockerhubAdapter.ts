@@ -52,7 +52,7 @@ export class DockerhubAdapter extends ImageRegistryAdapter {
         return `${DockerhubAdapter.DOCKER_API_URL}/${repoPath}/tags/${this.tag}`;
     }
 
-    async checkForNewDigest(): Promise<{ newDigest: string; }> {
+    async checkForNewDigest(): Promise<{ newDigest: string | null; tag?: string; }> {
         try {
             let response = await this.http.get(this.getImageUrl());
             let newDigest = null;

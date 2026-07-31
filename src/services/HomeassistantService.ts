@@ -475,12 +475,15 @@ export default class HomeassistantService {
     }
     const repoDigests = imageInfo?.RepoDigests || [];
     let currentDigest: string | null = null, newDigest: string | null = null;
+    let latestTag = identity.tag;
 
     if (identity.digest) {
       currentDigest = identity.digest.split(":").pop() || identity.digest;
       newDigest = currentDigest;
     } else {
-      newDigest = await DockerService.getImageNewDigest(identity.image, identity.tag);
+      const updateInfo = await DockerService.getImageUpdateInfo(identity.image, identity.tag);
+      newDigest = updateInfo.newDigest;
+      latestTag = updateInfo.tag;
     }
 
     if (!newDigest) {
@@ -505,8 +508,8 @@ export default class HomeassistantService {
       const installedVersion = installedVersionLabel || `${identity.tag}: ${currentDigest?.substring(0, 12)}`;
       let latestVersion = installedVersion;
       if (newDigest && currentDigest !== newDigest) {
-        const newVersion = await DockerService.getImageVersionLabel(identity.image, identity.tag, newDigest);
-        latestVersion = newVersion || `${identity.tag}: ${newDigest.substring(0, 12)}`;
+        const newVersion = await DockerService.getImageVersionLabel(identity.image, latestTag, newDigest);
+        latestVersion = newVersion || `${latestTag}: ${newDigest.substring(0, 12)}`;
       }
 
       const updateTopic = `${config.mqtt.topic}/${identity.topicName}/update`;
