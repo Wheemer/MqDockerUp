@@ -1,7 +1,7 @@
 import MqttCommandService from "../src/services/MqttCommandService";
 
 describe("MqttCommandService", () => {
-  test("builds the scoped command subscription", () => {
+  test("builds command subscriptions", () => {
     expect(MqttCommandService.getCommandSubscription("mqdockerup_server")).toBe("mqdockerup_server/+/command/+");
     expect(MqttCommandService.getLegacyCommandSubscriptions("mqdockerup_server")).toEqual([
       "mqdockerup_server/update",
@@ -57,6 +57,7 @@ describe("MqttCommandService", () => {
   });
 });
 
+
 describe("MqttCommandService command messages", () => {
   test("parses complete command messages", () => {
     expect(MqttCommandService.parseCommandMessage(
@@ -92,6 +93,7 @@ describe("MqttCommandService command messages", () => {
     )).toBeNull();
   });
 });
+
 
 describe("MqttCommandService legacy command messages", () => {
   test("keeps old flat command topics working", () => {

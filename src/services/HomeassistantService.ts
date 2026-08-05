@@ -2,7 +2,7 @@ import DockerService from "./DockerService";
 import ConfigService from "./ConfigService";
 import DatabaseService from "./DatabaseService";
 import logger from "./LoggerService"
-import {ContainerInspectInfo, ContainerInfo} from "dockerode";
+import {ContainerInspectInfo, ImageInspectInfo} from "dockerode";
 import IgnoreService from "./IgnoreService";
 import MqttCommandService, {ContainerCommand} from "./MqttCommandService";
 
@@ -27,8 +27,49 @@ type ContainerIdentity = {
   imageReference: string;
   digest?: string;
   containerName: string;
+  displayName: string;
   topicName: string;
 };
+
+type SensorDiscovery = {
+  key: string;
+  name: string;
+  valueName: string;
+  deviceClass?: string | null;
+  icon: string;
+};
+
+type ButtonDiscovery = {
+  key: string;
+  name: string;
+  command: ContainerCommand;
+  icon: string;
+  payloadPress?: string;
+};
+
+const sensorDiscoveries: SensorDiscovery[] = [
+  {key: "docker_id", name: "Container ID", valueName: "dockerId", deviceClass: null, icon: "mdi:key-variant"},
+  {key: "docker_name", name: "Container Name", valueName: "dockerName", deviceClass: null, icon: "mdi:label"},
+  {key: "docker_status", name: "Container Status", valueName: "dockerStatus", deviceClass: null, icon: "mdi:checkbox-marked-circle"},
+  {key: "docker_uptime", name: "Container Uptime", valueName: "dockerUptime", deviceClass: "timestamp", icon: "mdi:timer-sand"},
+  {key: "docker_created", name: "Container Created", valueName: "dockerCreated", deviceClass: "timestamp", icon: "mdi:calendar-clock"},
+  {key: "docker_restart_count", name: "Container Restart Count", valueName: "dockerRestartCount", deviceClass: null, icon: "mdi:restart"},
+  {key: "docker_restart_policy", name: "Container Restart Policy", valueName: "dockerRestartPolicy", deviceClass: null, icon: "mdi:restart"},
+  {key: "docker_health", name: "Container Health", valueName: "dockerHealth", deviceClass: null, icon: "mdi:heart-pulse"},
+  {key: "docker_ports", name: "Exposed Ports", valueName: "dockerPorts", deviceClass: null, icon: "mdi:lan-connect"},
+  {key: "docker_image", name: "Docker Image", valueName: "dockerImage", deviceClass: null, icon: "mdi:image"},
+  {key: "docker_tag", name: "Docker Tag", valueName: "dockerTag", deviceClass: null, icon: "mdi:tag"},
+  {key: "docker_registry", name: "Docker Registry", valueName: "dockerRegistry", deviceClass: null, icon: "mdi:database"},
+  {key: "docker_created_by", name: "Created By", valueName: "dockerCreatedBy", deviceClass: null, icon: "mdi:information"},
+];
+
+const buttonDiscoveries: ButtonDiscovery[] = [
+  {key: "manual_restart", name: "Manual Restart", command: "restart", icon: "mdi:restart"},
+  {key: "manual_start", name: "Start", command: "start", icon: "mdi:play"},
+  {key: "manual_stop", name: "Stop", command: "stop", icon: "mdi:stop"},
+  {key: "manual_pause", name: "Pause", command: "pause", icon: "mdi:pause"},
+  {key: "manual_unpause", name: "Unpause", command: "unpause", icon: "mdi:play-pause"},
+];
 
 export default class HomeassistantService {
   private static readonly safeNameRegex = /[\/.:;,+*?@^$%#!&"'`|<>{}\[\]()-\s\u0000-\u001F\u007F]/g;
@@ -41,36 +82,10 @@ export default class HomeassistantService {
     return container.Name.startsWith("/") ? container.Name.substring(1) : container.Name;
   }
 
-  public static splitImageReference(reference: string | null | undefined): { image: string; tag: string; digest?: string } {
-    if (!reference) {
-      return {image: "unknown", tag: "latest"};
-    }
-
-    const digestIndex = reference.indexOf("@");
-    const imageReference = digestIndex === -1 ? reference : reference.substring(0, digestIndex);
-    const digest = digestIndex === -1 ? undefined : reference.substring(digestIndex + 1);
-    const lastSlashIndex = imageReference.lastIndexOf("/");
-    const lastColonIndex = imageReference.lastIndexOf(":");
-
-    if (lastColonIndex > lastSlashIndex) {
-      return {
-        image: imageReference.substring(0, lastColonIndex),
-        tag: imageReference.substring(lastColonIndex + 1) || "latest",
-        ...(digest ? {digest} : {}),
-      };
-    }
-
-    return {
-      image: imageReference,
-      tag: "latest",
-      ...(digest ? {digest} : {}),
-    };
-  }
-
   private static getContainerIdentity(container: ContainerInspectInfo): ContainerIdentity {
     const prefix = config?.main.prefix || "";
     const imageReference = container.Config?.Image || "unknown";
-    const {image, tag, digest} = this.splitImageReference(imageReference);
+    const {image, tag, digest} = DockerService.splitImageReference(imageReference);
     const containerName = this.getContainerName(container);
     const formattedContainerName = this.formatSafeName(containerName);
     const topicName = prefix ? `${prefix}_${formattedContainerName}` : formattedContainerName;
@@ -79,35 +94,53 @@ export default class HomeassistantService {
       image,
       tag,
       imageReference,
-      ...(digest ? {digest} : {}),
+      ...(digest ? { digest } : {}),
       containerName,
+      displayName: containerName,
       topicName,
     };
   }
 
-  private static getContainerTopicName(container: ContainerInspectInfo): string {
-    return this.getContainerIdentity(container).topicName;
-  }
-
-  private static getContainerCommandTopic(topicName: string, command: ContainerCommand): string {
-    return MqttCommandService.getCommandTopic(config.mqtt.topic, topicName, command);
-  }
-
-  private static createDevice(imageReference: string, deviceName: string): DiscoveryDevice {
+  private static createDevice(imageReference: string, topicName: string, displayName: string): DiscoveryDevice {
     return {
       manufacturer: "MqDockerUp",
       model: imageReference,
-      name: deviceName,
+      name: displayName,
       sw_version: packageJson.version,
       sa: suggestedArea,
-      identifiers: [this.formatSafeName(deviceName)],
+      identifiers: [topicName],
     };
+  }
+
+  private static getDiscoveryTopic(component: string, topicName: string, key: string): string {
+    return `${config?.mqtt?.discoveryPrefix}/${component}/${topicName}/${key}/config`;
+  }
+
+  private static publishDiscoveryMessage(client: any, topic: string, payload: object, containerId: string): string {
+    this.publishMessage(client, topic, payload, {retain: true});
+    DatabaseService.addTopic(topic, containerId);
+    return topic;
+  }
+
+  private static removeStaleDiscoveryTopics(client: any, containerId: string, currentTopics: string[]) {
+    const currentTopicSet = new Set(currentTopics);
+    const storedTopics = DatabaseService.getTopicsForContainer(containerId);
+
+    for (const {topic} of storedTopics) {
+      if (currentTopicSet.has(topic)) {
+        continue;
+      }
+
+      this.publishMessage(client, topic, "", {retain: true});
+      DatabaseService.deleteTopic(topic, containerId);
+    }
   }
 
   private static createButtonPayload(
     name: string,
     imageReference: string,
     topicName: string,
+    displayName: string,
     command: ContainerCommand,
     containerId: string,
     icon: string,
@@ -117,36 +150,15 @@ export default class HomeassistantService {
     return {
       name,
       unique_id: `${topicName}_${uniqueSuffix}`,
-      command_topic: this.getContainerCommandTopic(topicName, command),
+      command_topic: MqttCommandService.getCommandTopic(config.mqtt.topic, topicName, command),
       command_template: JSON.stringify({containerId, topicName}),
       availability: {
         topic: `${config.mqtt.topic}/availability`,
       },
-      payload_available: "online",
-      payload_not_available: "offline",
       payload_press: payloadPress,
-      device: this.createDevice(imageReference, topicName),
+      device: this.createDevice(imageReference, topicName, displayName),
       icon,
     };
-  }
-
-  private static async recordDiscoveryTopic(topic: string, containerId: string, currentTopics: string[]): Promise<void> {
-    currentTopics.push(topic);
-    await DatabaseService.addTopic(topic, containerId);
-  }
-
-  private static async removeStaleDiscoveryTopics(client: any, containerId: string, currentTopics: string[]) {
-    const currentTopicSet = new Set(currentTopics);
-    const storedTopics = await DatabaseService.getTopicsForContainer(containerId);
-
-    for (const {topic} of storedTopics) {
-      if (currentTopicSet.has(topic)) {
-        continue;
-      }
-
-      this.publishMessage(client, topic, "", {retain: true});
-      await DatabaseService.deleteTopic(topic, containerId);
-    }
   }
 
   /**
@@ -170,133 +182,65 @@ export default class HomeassistantService {
 
     for (const container of containers) {
       const identity = this.getContainerIdentity(container);
-      const {image, tag, imageReference, containerName, topicName} = identity;
-      const deviceName = topicName;
+
+      if (!await DatabaseService.containerExists(container.Id)) {
+        logger.info(`Adding container ${identity.containerName} to database`);
+        await DatabaseService.addContainer(container.Id, identity.containerName, identity.image, identity.tag);
+      }
+
       const currentTopics: string[] = [];
-      let containerIsInDb = false;
 
-      await DatabaseService.containerExists(container.Id).then((exists) => {
-        containerIsInDb = exists;
-      })
-
-      if (!containerIsInDb) {
-        // Save container info to database
-        logger.info(`Adding container ${containerName} to database`);
-        await DatabaseService.addContainer(container.Id, containerName, image, tag);
+      for (const discovery of sensorDiscoveries) {
+        const topic = this.getDiscoveryTopic("sensor", identity.topicName, discovery.key);
+        const payload = this.createPayload(
+          discovery.name,
+          identity.imageReference,
+          discovery.valueName,
+          identity.topicName,
+          identity.displayName,
+          discovery.deviceClass,
+          discovery.icon
+        );
+        currentTopics.push(this.publishDiscoveryMessage(client, topic, payload, container.Id));
       }
 
-      let topic, payload;
-
-      const discoveryPrefix = config?.mqtt?.discoveryPrefix
-
-      // Container Id
-      topic = `${discoveryPrefix}/sensor/${topicName}/docker_id/config`;
-      payload = this.createPayload("Container ID", imageReference, "dockerId", deviceName, null, "mdi:key-variant");
-      this.publishMessage(client, topic, payload, {retain: true});
-      await this.recordDiscoveryTopic(topic, container.Id, currentTopics);
-
-      // Container Name
-      topic = `${discoveryPrefix}/sensor/${topicName}/docker_name/config`;
-      payload = this.createPayload("Container Name", imageReference, "dockerName", deviceName, null, "mdi:label");
-      this.publishMessage(client, topic, payload, {retain: true});
-      await this.recordDiscoveryTopic(topic, container.Id, currentTopics);
-
-      // Container Status
-      topic = `${discoveryPrefix}/sensor/${topicName}/docker_status/config`;
-      payload = this.createPayload("Container Status", imageReference, "dockerStatus", deviceName, null, "mdi:checkbox-marked-circle");
-      this.publishMessage(client, topic, payload, {retain: true});
-      await this.recordDiscoveryTopic(topic, container.Id, currentTopics);
-
-      // Container Uptime
-      topic = `${discoveryPrefix}/sensor/${topicName}/docker_uptime/config`;
-      payload = this.createPayload("Container Uptime", imageReference, "dockerUptime", deviceName, "timestamp", "mdi:timer-sand");
-      this.publishMessage(client, topic, payload, {retain: true});
-      await this.recordDiscoveryTopic(topic, container.Id, currentTopics);
-
-      // Container Created
-      topic = `${discoveryPrefix}/sensor/${topicName}/docker_created/config`;
-      payload = this.createPayload("Container Created", imageReference, "dockerCreated", deviceName, "timestamp", "mdi:calendar-clock");
-      this.publishMessage(client, topic, payload, {retain: true});
-      await this.recordDiscoveryTopic(topic, container.Id, currentTopics);
-
-      // Container Restart Count
-      topic = `${discoveryPrefix}/sensor/${topicName}/docker_restart_count/config`;
-      payload = this.createPayload("Container Restart Count", imageReference, "dockerRestartCount", deviceName, null, "mdi:restart");
-      this.publishMessage(client, topic, payload, {retain: true});
-      await this.recordDiscoveryTopic(topic, container.Id, currentTopics);
-
-      // Container Restart Policy
-      topic = `${discoveryPrefix}/sensor/${topicName}/docker_restart_policy/config`;
-      payload = this.createPayload("Container Restart Policy", imageReference, "dockerRestartPolicy", deviceName, null, "mdi:restart");
-      this.publishMessage(client, topic, payload, {retain: true});
-      await this.recordDiscoveryTopic(topic, container.Id, currentTopics);
-
-      // Container Health
-      topic = `${discoveryPrefix}/sensor/${topicName}/docker_health/config`;
-      payload = this.createPayload("Container Health", imageReference, "dockerHealth", deviceName, null, "mdi:heart-pulse");
-      this.publishMessage(client, topic, payload, {retain: true});
-      await this.recordDiscoveryTopic(topic, container.Id, currentTopics);
-
-      // Container Ports
-      topic = `${discoveryPrefix}/sensor/${topicName}/docker_ports/config`;
-      payload = this.createPayload("Exposed Ports", imageReference, "dockerPorts", deviceName, null, "mdi:lan-connect");
-      this.publishMessage(client, topic, payload, {retain: true});
-      await this.recordDiscoveryTopic(topic, container.Id, currentTopics);
-
-      const buttons = [
-        {key: "manual_restart", name: "Manual Restart", command: "restart", icon: "mdi:restart"},
-        {key: "manual_start", name: "Start", command: "start", icon: "mdi:play"},
-        {key: "manual_stop", name: "Stop", command: "stop", icon: "mdi:stop"},
-        {key: "manual_pause", name: "Pause", command: "pause", icon: "mdi:pause"},
-        {key: "manual_unpause", name: "Unpause", command: "unpause", icon: "mdi:play-pause"},
-      ];
-
-      for (const button of buttons) {
-        topic = `${discoveryPrefix}/button/${topicName}/docker_${button.key}/config`;
-        payload = this.createButtonPayload(button.name, imageReference, topicName, button.command as ContainerCommand, container.Id, button.icon, button.command, button.key);
-        this.publishMessage(client, topic, payload, {retain: true});
-        await this.recordDiscoveryTopic(topic, container.Id, currentTopics);
+      for (const button of buttonDiscoveries) {
+        const topic = this.getDiscoveryTopic("button", identity.topicName, `docker_${button.key}`);
+        const payload = this.createButtonPayload(
+          button.name,
+          identity.imageReference,
+          identity.topicName,
+          identity.displayName,
+          button.command,
+          container.Id,
+          button.icon,
+          button.payloadPress ?? button.command,
+          button.key
+        );
+        currentTopics.push(this.publishDiscoveryMessage(client, topic, payload, container.Id));
       }
-
-      // Docker Image
-      topic = `${discoveryPrefix}/sensor/${topicName}/docker_image/config`;
-      payload = this.createPayload("Docker Image", imageReference, "dockerImage", deviceName, null, "mdi:image");
-      this.publishMessage(client, topic, payload, {retain: true});
-      await this.recordDiscoveryTopic(topic, container.Id, currentTopics);
-
-      // Docker Tag
-      topic = `${discoveryPrefix}/sensor/${topicName}/docker_tag/config`;
-      payload = this.createPayload("Docker Tag", imageReference, "dockerTag", deviceName, null, "mdi:tag");
-      this.publishMessage(client, topic, payload, {retain: true});
-      await this.recordDiscoveryTopic(topic, container.Id, currentTopics);
-
-      // Docker Registry
-      topic = `${discoveryPrefix}/sensor/${topicName}/docker_registry/config`;
-      payload = this.createPayload("Docker Registry", imageReference, "dockerRegistry", deviceName, null, "mdi:database");
-      this.publishMessage(client, topic, payload, {retain: true});
-      await this.recordDiscoveryTopic(topic, container.Id, currentTopics);
-
-      // Container Created By
-      topic = `${discoveryPrefix}/sensor/${topicName}/docker_created_by/config`;
-      payload = this.createPayload("Created By", imageReference, "dockerCreatedBy", deviceName, null, "mdi:information");
-      this.publishMessage(client, topic, payload, {retain: true});
-      await this.recordDiscoveryTopic(topic, container.Id, currentTopics);
-
 
       if (!IgnoreService.ignoreUpdates(container)) {
-        topic = `${discoveryPrefix}/button/${topicName}/docker_manual_update/config`;
-        payload = this.createButtonPayload("Manual Update", imageReference, topicName, "manualUpdate", container.Id, "mdi:arrow-up-bold-circle", "update", "manual_update");
-        this.publishMessage(client, topic, payload, {retain: true});
-        await this.recordDiscoveryTopic(topic, container.Id, currentTopics);
+        const manualUpdateTopic = this.getDiscoveryTopic("button", identity.topicName, "docker_manual_update");
+        const manualUpdatePayload = this.createButtonPayload(
+          "Manual Update",
+          identity.imageReference,
+          identity.topicName,
+          identity.displayName,
+          "manualUpdate",
+          container.Id,
+          "mdi:arrow-up-bold-circle",
+          "update",
+          "manual_update"
+        );
+        currentTopics.push(this.publishDiscoveryMessage(client, manualUpdateTopic, manualUpdatePayload, container.Id));
 
-        // Docker Update
-        topic = `${discoveryPrefix}/update/${topicName}/docker_update/config`;
-        payload = this.createUpdatePayload("Update", image, imageReference, "dockerUpdate", deviceName, container.Id);
-        this.publishMessage(client, topic, payload, {retain: true});
-        await this.recordDiscoveryTopic(topic, container.Id, currentTopics);
+        const updateTopic = this.getDiscoveryTopic("update", identity.topicName, "docker_update");
+        const updatePayload = this.createUpdatePayload("Update", identity.image, identity.imageReference, "dockerUpdate", identity.topicName, identity.displayName, container.Id);
+        currentTopics.push(this.publishDiscoveryMessage(client, updateTopic, updatePayload, container.Id));
       }
 
-      await this.removeStaleDiscoveryTopics(client, container.Id, currentTopics);
+      this.removeStaleDiscoveryTopics(client, container.Id, currentTopics);
     }
   }
 
@@ -326,7 +270,13 @@ export default class HomeassistantService {
       // await this.publishImageUpdateMessage(container, client);
 
       if (!IgnoreService.ignoreUpdates(container)) {
-        await this.publishImageUpdateMessage(container, client);
+        try {
+          await this.publishImageUpdateMessage(container, client);
+        } catch (error: any) {
+          logger.warn(
+            `Skipping update check for container ${container.Name?.substring(1) || container.Id}: ${error.message || error}`
+          );
+        }
       }
     }
   }
@@ -343,10 +293,6 @@ export default class HomeassistantService {
       payload = JSON.stringify(payload);
     }
 
-    if (payload == "") {
-      payload = JSON.stringify({})
-    }
-
     client.publish(topic, payload, configObject);
   }
 
@@ -354,19 +300,19 @@ export default class HomeassistantService {
     name: string,
     imageReference: string,
     valueName: string,
-    deviceName: string,
+    topicName: string,
+    displayName: string,
     deviceClass?: string | null,
     icon: string = "mdi:docker"
   ): object {
-    const formatedDeviceName = this.formatSafeName(deviceName);
     const formatedName = name.toLowerCase().replace(/[^a-z0-9_]/g, "_");
-    const defaultEntityId = `sensor.${formatedDeviceName}_${formatedName}`;
+    const defaultEntityId = `sensor.${topicName}_${formatedName}`;
 
     return {
       default_entity_id: defaultEntityId,
       name: `${name}`,
-      unique_id: `${formatedDeviceName} ${name}`,
-      state_topic: `${config.mqtt.topic}/${formatedDeviceName}`,
+      unique_id: `${topicName} ${name}`,
+      state_topic: `${config.mqtt.topic}/${topicName}`,
       device_class: deviceClass,
       value_template: `{{ value_json.${valueName} }}`,
       availability:
@@ -377,7 +323,7 @@ export default class HomeassistantService {
       payload_available: "online",
       payload_not_available: "offline",
       device: {
-        ...this.createDevice(imageReference, formatedDeviceName),
+        ...this.createDevice(imageReference, topicName, displayName),
       },
       icon: icon,
     };
@@ -388,18 +334,18 @@ export default class HomeassistantService {
     image: string,
     imageReference: string,
     valueName: string,
-    deviceName: string,
+    topicName: string,
+    displayName: string,
     containerId: any
   ): object {
-    const formatedDeviceName = this.formatSafeName(deviceName);
     const formatedName = name.toLowerCase().replace(/[^a-z0-9_]/g, "_");
-    const defaultEntityId = `update.${formatedDeviceName}_${formatedName}`;
+    const defaultEntityId = `update.${topicName}_${formatedName}`;
 
     return {
       default_entity_id: defaultEntityId,
       name: `${name}`,
-      unique_id: `${formatedDeviceName} ${name}`,
-      state_topic: `${config.mqtt.topic}/${formatedDeviceName}/update`,
+      unique_id: `${topicName} ${name}`,
+      state_topic: `${config.mqtt.topic}/${topicName}/update`,
       device_class: "firmware",
       availability: [
         {
@@ -409,12 +355,12 @@ export default class HomeassistantService {
       payload_available: "online",
       payload_not_available: "offline",
       device: {
-        ...this.createDevice(imageReference, formatedDeviceName),
+        ...this.createDevice(imageReference, topicName, displayName),
       },
       icon: "mdi:arrow-up-bold-circle",
-      entity_picture: "https://github.com/Wheemer/MqDockerUp/raw/main/assets/logo_200x200.png",
-      payload_install: JSON.stringify({containerId: containerId, image: image, topicName: formatedDeviceName}),
-      command_topic: this.getContainerCommandTopic(formatedDeviceName, "update"),
+      entity_picture: "https://github.com/MichelFR/MqDockerUp/raw/main/assets/logo_200x200.png",
+      payload_install: JSON.stringify({containerId: containerId, image: image, topicName}),
+      command_topic: MqttCommandService.getCommandTopic(config.mqtt.topic, topicName, "update"),
     };
   }
 
@@ -439,10 +385,10 @@ export default class HomeassistantService {
       }
     }
 
-    const topicName = this.getContainerTopicName(container);
+    const identity = this.getContainerIdentity(container);
 
     // Update entity payload
-    const updateTopic = `${config.mqtt.topic}/${topicName}/update`;
+    const updateTopic = `${config.mqtt.topic}/${identity.topicName}/update`;
     let updatePayload: any;
 
     updatePayload = {
@@ -450,7 +396,7 @@ export default class HomeassistantService {
       in_progress: false,
     }
 
-    if (update_percentage !== null) {
+    if (update_percentage && in_progress) {
       updatePayload.update_percentage = update_percentage;
       updatePayload.in_progress = in_progress;
     }
@@ -477,10 +423,10 @@ export default class HomeassistantService {
       return;
     }
 
-    const topicName = this.getContainerTopicName(container);
+    const identity = this.getContainerIdentity(container);
 
     // Update entity payload
-    const updateTopic = `${config.mqtt.topic}/${topicName}/update`;
+    const updateTopic = `${config.mqtt.topic}/${identity.topicName}/update`;
     let updatePayload: any;
 
     updatePayload = {
@@ -510,65 +456,89 @@ export default class HomeassistantService {
       }
     }
 
+    if (!container || !container.Config) {
+      logger.warn("Container or container configuration is missing");
+      return;
+    }
+
+    logger.info(`Inspecting container ${container.Name || "unknown"}`);
+
     const identity = this.getContainerIdentity(container);
-    const {image, tag, imageReference, digest, topicName} = identity;
-    const imageInfo = await DockerService.getImageInfo(imageReference);
+    let imageInfo: ImageInspectInfo;
+    try {
+      imageInfo = await DockerService.getImageInfo(identity.imageReference);
+    } catch (error: any) {
+      logger.warn(
+        `Could not inspect image ${identity.imageReference} for container ${identity.containerName}: ${error.message || error}`
+      );
+      return;
+    }
     const repoDigests = imageInfo?.RepoDigests || [];
     let currentDigest: string | null = null, newDigest: string | null = null;
+    let latestTag = identity.tag;
 
-    if (digest) {
-      currentDigest = digest.includes(":") ? digest.split(":").pop() || digest : digest;
+    if (identity.digest) {
+      currentDigest = identity.digest.split(":").pop() || identity.digest;
       newDigest = currentDigest;
-      logger.info(`Using pinned digest for image ${image}:${tag}`);
     } else {
-      newDigest = await DockerService.getImageNewDigest(image, tag);
+      const updateInfo = await DockerService.getImageUpdateInfo(identity.image, identity.tag);
+      newDigest = updateInfo.newDigest;
+      latestTag = updateInfo.tag;
     }
 
     if (!newDigest) {
-      logger.warn(`Failed to find new digest for image ${image}:${tag}`);
-    } else if (!digest) {
-      if (repoDigests.length > 0) {
+      logger.warn(`Failed to find new digest for image ${identity.image}:${identity.tag}`);
+    } else {
+      if (identity.digest) {
+        logger.info(`Image ${identity.imageReference} is pinned by digest`);
+      } else if (repoDigests.length > 0) {
         if (repoDigests.some(d => d.endsWith(newDigest))) {
           currentDigest = newDigest;
-          logger.info(`Image ${image}:${tag} is up-to-date`);
+          logger.info(`Image ${identity.image}:${identity.tag} is up-to-date`);
         } else {
           currentDigest = repoDigests[0].split(":")[1];
-          logger.info(`New version available for image ${image}:${tag}`);
+          logger.info(`New version available for image ${identity.image}:${identity.tag}`);
         }
       } else {
         currentDigest = "";
-        logger.info(`No existing digests found for image ${image}:${tag}`);
+        logger.info(`No existing digests found for image ${identity.image}:${identity.tag}`);
       }
-    }
 
-      // Update entity payload
-      const updateTopic = `${config.mqtt.topic}/${topicName}/update`;
-      const sourceRepo = await DockerService.getSourceRepo(image, tag);
+      const installedVersionLabel = imageInfo?.Config?.Labels?.["org.opencontainers.image.version"];
+      const installedVersion = installedVersionLabel || `${identity.tag}: ${currentDigest?.substring(0, 12)}`;
+      let latestVersion = installedVersion;
+      if (newDigest && currentDigest !== newDigest) {
+        const newVersion = await DockerService.getImageVersionLabel(identity.image, latestTag, newDigest);
+        latestVersion = newVersion || `${latestTag}: ${newDigest.substring(0, 12)}`;
+      }
+
+      const updateTopic = `${config.mqtt.topic}/${identity.topicName}/update`;
+      const sourceRepo = await DockerService.getSourceRepo(identity.image, identity.tag);
 
       if (sourceRepo) {
         logger.info(`Found source repository: ${sourceRepo}`);
       } else {
-        logger.warn(`Could not find source repository for ${image}`);
+        logger.debug(`No source repository metadata found for ${identity.image}`);
       }
 
       let updatePayload: any;
       if (haLegacy) {
         updatePayload = {
-          installed_version: `${tag}: ${currentDigest?.substring(0, 12)}`,
-          latest_version: newDigest ? `${tag}: ${newDigest?.substring(0, 12)}` : null,
+          installed_version: installedVersion,
+          latest_version: newDigest ? latestVersion : null,
           release_notes: null,
           release_url: null,
           entity_picture: null,
-          title: `${image}:${tag}`,
+          title: identity.displayName,
           progress: 0,
           update: {
             state: currentDigest && newDigest && currentDigest !== newDigest ? "available" : "idle",
-            installed_version: `${tag}: ${currentDigest?.substring(0, 12)}`,
-            latest_version: newDigest ? `${tag}: ${newDigest?.substring(0, 12)}` : null,
+            installed_version: installedVersion,
+            latest_version: newDigest ? latestVersion : null,
             last_check: new Date().toISOString(),
             progress: 0,
             remaining: 0,
-          }
+          },
         };
 
         if (update_percentage !== null && remaining !== null) {
@@ -582,70 +552,64 @@ export default class HomeassistantService {
         }
       } else {
         updatePayload = {
-          installed_version: `${tag}: ${currentDigest?.substring(0, 12)}`,
-          latest_version: newDigest ? `${tag}: ${newDigest?.substring(0, 12)}` : null,
+          installed_version: installedVersion,
+          latest_version: newDigest ? latestVersion : null,
           release_summary: "",
-          release_url: `${sourceRepo ? sourceRepo : "https://github.com/Wheemer/MqDockerUp"}/releases`,
-          entity_picture: "https://raw.githubusercontent.com/Wheemer/MqDockerUp/refs/heads/main/assets/logo_200x200.png",
-          title: `${image}:${tag}`,
-          in_progress: false,
-          update_percentage: null,
+          release_url: `${sourceRepo ? sourceRepo : "https://github.com/MichelFR/MqDockerUp"}/releases`,
+          entity_picture: "https://raw.githubusercontent.com/MichelFR/MqDockerUp/refs/heads/main/assets/logo_200x200.png",
+          title: identity.displayName,
+          update_percentage: update_percentage,
+          in_progress: update_percentage !== null && remaining !== null,
         };
-
-        if (update_percentage !== null && remaining !== null) {
-          updatePayload.update_percentage = update_percentage;
-          updatePayload.in_progress = state ? state !== "idle" : true;
-        }
-
       }
 
       this.publishMessage(client, updateTopic, updatePayload, {retain: true});
+      if (log) logger.info(`Published update message for ${identity.imageReference}`);
+    }
   }
 
   /**
-   * Publish device messages to MQTT
+   * Publish container info to MQTT
    * @param container
    * @param client
    */
   public static async publishContainerMessage(container: ContainerInspectInfo, client: any) {
     const identity = this.getContainerIdentity(container);
-    const {image, tag, topicName, containerName} = identity;
 
     let dockerPorts = "";
-    if (container.HostConfig.PortBindings) {
-      for (const [key, value] of Object.entries(container.HostConfig.PortBindings)) {
-        if (value && Array.isArray(value) && value.length > 0) {
-          const hostPort = (value[0] as { HostPort: string }).HostPort;
-          dockerPorts += `${key} : ${hostPort}, `;
+    if (container.HostConfig?.PortBindings) {
+      for (const [containerPort, hostPorts] of Object.entries(container.HostConfig.PortBindings)) {
+        if (hostPorts && Array.isArray(hostPorts) && hostPorts.length > 0) {
+          const hostPort = (hostPorts[0] as { HostPort: string }).HostPort;
+          dockerPorts += `${containerPort} : ${hostPort}, `;
         }
       }
-      // Remove the last comma and space if dockerPorts is not empty
       if (dockerPorts.endsWith(", ")) {
         dockerPorts = dockerPorts.slice(0, -2);
       }
     }
 
-    let registry = await DockerService.getImageRegistryName(image);
-
+    const dockerUptime = container.State.StartedAt == "0001-01-01T00:00:00Z" ? "" : container.State.StartedAt
     const createdBy = DockerService.getCreatedBy(container);
 
-    const topic = `${config.mqtt.topic}/${topicName}`;
+    const topic = `${config.mqtt.topic}/${identity.topicName}`;
     const payload = {
-      dockerImage: image,
-      dockerTag: tag,
-      dockerName: containerName,
+      dockerImage: identity.image,
+      dockerTag: identity.tag,
       dockerId: container.Id.substring(0, 12),
+      dockerName: identity.containerName,
       dockerStatus: container.State.Status,
-      dockerUptime: container.State.StartedAt,
-      dockerCreated: container.Created,
-      dockerRestartCount: container.RestartCount,
-      dockerRestartPolicy: container?.HostConfig?.RestartPolicy?.Name || "unknown",
       dockerHealth: container.State.Health?.Status || "unknown",
+      dockerRestartCount: container.RestartCount,
+      dockerRestartPolicy: container.HostConfig?.RestartPolicy?.Name || "unknown",
       dockerPorts: dockerPorts,
-      dockerRegistry: registry,
+      dockerUptime: dockerUptime,
+      dockerCreated: container.Created,
+      dockerRegistry: await DockerService.getImageRegistryName(identity.image),
       dockerCreatedBy: createdBy,
     };
+
     this.publishMessage(client, topic, payload, {retain: true});
+    logger.info(`Published container message for ${identity.containerName}`);
   }
 }
-

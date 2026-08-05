@@ -3,25 +3,23 @@ import ConfigService from "./services/ConfigService";
 import DockerService from "./services/DockerService";
 import HomeassistantService from "./services/HomeassistantService";
 import DatabaseService from "./services/DatabaseService";
+import MigrationService from "./services/MigrationService";
 import TimeService from "./services/TimeService";
 import MqttCommandService, {ContainerCommand, ContainerCommandPayload} from "./services/MqttCommandService";
-import logger, {clearConsole} from "./services/LoggerService"
+import logger from "./services/LoggerService"
 const _ = require('lodash');
 
 require('source-map-support').install();
 
 const config = ConfigService.getConfig();
-clearConsole();
 const availabilityTopic = `${config.mqtt.topic}/availability`;
 const isContainerCheckOnChangesEnabled = ConfigService.autoParseEnvVariable(config.main.containerCheckOnChanges) !== false;
-const protocolVersion = Number(ConfigService.autoParseEnvVariable(config.mqtt.protocolVersion)) as 3 | 4 | 5;
-const connectTimeout = Number(ConfigService.autoParseEnvVariable(config.mqtt.connectTimeout));
 
 const client = mqtt.connect(config.mqtt.connectionUri, {
   username: config.mqtt.username,
   password: config.mqtt.password,
-  protocolVersion,
-  connectTimeout,
+  protocolVersion: ConfigService.autoParseEnvVariable(config.mqtt.protocolVersion),
+  connectTimeout: ConfigService.autoParseEnvVariable(config.mqtt.connectTimeout),
   clientId: config.mqtt.clientId,
   reconnectPeriod: 5000,
   rejectUnauthorized: false,
@@ -37,10 +35,18 @@ logger.level = ConfigService?.getConfig()?.logs?.level;
 
 // Track connection state
 let isConnected = false;
+let reconnectCount = 0;
+const MAX_RECONNECT_DELAY = ConfigService.autoParseEnvVariable(config.mqtt.maxReconnectDelay) * 1000 || 300000;
+
 export const mqttClient = client;
 
 // Check for new/old containers and publish updates
 const checkAndPublishContainerMessages = async (): Promise<void> => {
+  if (DockerService.updatingContainers.length > 0) {
+    logger.info(`Skipping container check while updating containers: ${DockerService.updatingContainers.join(", ")}`);
+    return;
+  }
+
   logger.info("Checking for removed containers...");
   const containers = await DockerService.listContainers();
   const runningContainerIds = containers.map(container => container.Id);
@@ -87,6 +93,11 @@ const checkAndPublishContainerMessages = async (): Promise<void> => {
 };
 
 const checkAndPublishImageUpdateMessages = async (): Promise<void> => {
+  if (DockerService.updatingContainers.length > 0) {
+    logger.info(`Skipping image update check while updating containers: ${DockerService.updatingContainers.join(", ")}`);
+    return;
+  }
+
   logger.info("Checking for image updates...");
   await HomeassistantService.publishImageUpdateMessages(client);
 
@@ -94,24 +105,16 @@ const checkAndPublishImageUpdateMessages = async (): Promise<void> => {
   logger.info(`Next check in ${TimeService.formatDuration(TimeService.parseDuration(config.main.updateCheckInterval))}`);
 };
 
-let containerCheckingIntervalId: NodeJS.Timeout | undefined;
+let containerCheckingIntervalId: NodeJS.Timeout;
 
-const startContainerCheckingInterval = () => {
-  if (containerCheckingIntervalId) {
-    clearInterval(containerCheckingIntervalId);
-  }
-
+const startContainerCheckingInterval = async () => {
   logger.verbose(`Setting up startContainerCheckingInterval with value ${config.main.containerCheckInterval}`);
   containerCheckingIntervalId = setInterval(checkAndPublishContainerMessages, TimeService.parseDuration(config.main.containerCheckInterval));
 };
 
-let imageCheckingInterval: NodeJS.Timeout | undefined;
+let imageCheckingInterval: NodeJS.Timeout;
 
-const startImageCheckingInterval = () => {
-  if (imageCheckingInterval) {
-    clearInterval(imageCheckingInterval);
-  }
-
+const startImageCheckingInterval = async () => {
   logger.verbose(`Setting up startImageCheckingInterval with value ${config.main.updateCheckInterval}`);
   imageCheckingInterval = setInterval(checkAndPublishImageUpdateMessages, TimeService.parseDuration(config.main.updateCheckInterval));
 };
@@ -119,17 +122,17 @@ const startImageCheckingInterval = () => {
 // Connected to MQTT broker
 client.on('connect', async function () {
   logger.info('MQTT client successfully connected');
-  isConnected = true;
 
   // Publish availability as online
   await HomeassistantService.publishAvailability(client, true);
 
+  // One-off cleanup of legacy (image-based) discovery topics before publishing
+  // the current container-based ones, so upgrading instances don't keep
+  // orphaned Home Assistant entities.
+  MigrationService.runStartupMigrations(client);
+
   if (config?.ignore?.containers == "*") {
     logger.warn('Skipping setup of container checking cause all containers is ignored `ignore.containers="*"`.')
-    if (containerCheckingIntervalId) {
-      clearInterval(containerCheckingIntervalId);
-      containerCheckingIntervalId = undefined;
-    }
   } else {
     await checkAndPublishContainerMessages();
     startContainerCheckingInterval();
@@ -137,10 +140,6 @@ client.on('connect', async function () {
 
   if (config?.ignore?.updates == "*") {
     logger.warn('Skipping setup of image update checking cause all containers update is ignored `ignore.updates="*"`.')
-    if (imageCheckingInterval) {
-      clearInterval(imageCheckingInterval);
-      imageCheckingInterval = undefined;
-    }
   } else {
     await checkAndPublishImageUpdateMessages();
     startImageCheckingInterval();
@@ -150,10 +149,6 @@ client.on('connect', async function () {
   for (const legacyCommandTopic of MqttCommandService.getLegacyCommandSubscriptions(config.mqtt.topic)) {
     client.subscribe(legacyCommandTopic);
   }
-});
-
-client.on("close", () => {
-  isConnected = false;
 });
 
 client.on('error', function (err) {
@@ -222,7 +217,11 @@ client.on("message", async (topic: string, message: Buffer) => {
     return;
   }
 
-  await commandHandlers[commandMessage.command](commandMessage.payload);
+  try {
+    await commandHandlers[commandMessage.command](commandMessage.payload);
+  } catch (error) {
+    logger.error(`Failed to execute command ${commandMessage.command}:`, error);
+  }
 });
 
 // Docker event handlers
@@ -280,14 +279,6 @@ const exitHandler = async (exitCode: number, error?: any) => {
     
     if (isConnected) {
       await HomeassistantService.publishAvailability(client, false);
-    }
-
-    if (containerCheckingIntervalId) {
-      clearInterval(containerCheckingIntervalId);
-    }
-
-    if (imageCheckingInterval) {
-      clearInterval(imageCheckingInterval);
     }
     
     const updatingContainers = DockerService.updatingContainers;

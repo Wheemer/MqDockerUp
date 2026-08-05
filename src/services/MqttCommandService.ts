@@ -24,7 +24,7 @@ export type ContainerCommandMessage = {
   containerTopic?: string;
 };
 
-const containerCommands = [
+export const containerCommands = [
   "update",
   "restart",
   "start",
@@ -35,6 +35,14 @@ const containerCommands = [
 ] as const satisfies readonly ContainerCommand[];
 
 const commands: ReadonlySet<string> = new Set(containerCommands);
+
+function isContainerCommand(command: string): command is ContainerCommand {
+  return commands.has(command);
+}
+
+function isCommandPayload(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object";
+}
 
 export default class MqttCommandService {
   public static getCommandSubscription(topic: string): string {
@@ -64,13 +72,13 @@ export default class MqttCommandService {
 
     const [containerTopic, , command] = parts;
 
-    if (!containerTopic || !commands.has(command)) {
+    if (!containerTopic || !isContainerCommand(command)) {
       return null;
     }
 
     return {
       containerTopic,
-      command: command as ContainerCommand,
+      command,
     };
   }
 
@@ -83,7 +91,7 @@ export default class MqttCommandService {
 
     const command = topic.substring(prefix.length);
 
-    return commands.has(command) ? command as ContainerCommand : null;
+    return isContainerCommand(command) ? command : null;
   }
 
   public static parseCommandMessage(rootTopic: string, topic: string, message: Buffer | string): ContainerCommandMessage | null {
@@ -135,18 +143,18 @@ export default class MqttCommandService {
       return null;
     }
 
-    if (!payload || typeof payload !== "object") {
+    if (!isCommandPayload(payload)) {
       return null;
     }
 
-    const containerId = (payload as { containerId?: unknown }).containerId;
+    const containerId = payload.containerId;
 
     if (typeof containerId !== "string" || !containerId) {
       return null;
     }
 
-    const image = (payload as { image?: unknown }).image;
-    const topicName = (payload as { topicName?: unknown }).topicName;
+    const image = payload.image;
+    const topicName = payload.topicName;
 
     return {
       containerId,

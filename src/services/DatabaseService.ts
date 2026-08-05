@@ -1,95 +1,30 @@
 import logger from "../services/LoggerService";
+import Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
-const sqlite3 = require('sqlite3').verbose();
+
+const databasePath = path.join(process.cwd(), 'data', 'database.db');
+fs.mkdirSync(path.dirname(databasePath), {recursive: true});
 
 export default class DatabaseService {
-    private static db: any | null = null;
-    private static initPromise: Promise<void> | null = null;
-
-    private static getDatabasePath(): string {
-        return process.env.MQDOCKERUP_DATABASE_PATH || path.join(process.cwd(), 'data', 'database.db');
-    }
-
-    private static connect(): any {
-        if (this.db) {
-            return this.db;
-        }
-
-        const databasePath = this.getDatabasePath();
-        fs.mkdirSync(path.dirname(databasePath), {recursive: true});
-        this.db = new sqlite3.Database(databasePath, (err: any) => {
-            if (err) {
-                logger.error(err.message);
-                return;
-            }
-            logger.info('Connected to the database.');
-        });
-        return this.db;
-    }
-
-    private static async run(statement: string, params: unknown[] = []): Promise<void> {
-        await this.init();
-        return new Promise((resolve, reject) => {
-            this.connect().run(statement, params, (err: Error | null) => {
-                if (err) {
-                    reject(err);
-                } else {
-                    resolve();
-                }
-            });
-        });
-    }
+    static db: Database.Database = new Database(databasePath);
 
     /**
      * Initializes the database.
      * Creates the tables if they don't exist.
      */
-    static init(): Promise<void> {
-        if (this.initPromise) {
-            return this.initPromise;
+    static init() {
+        try {
+            logger.info('Connected to the database.');
+            this.db.exec('CREATE TABLE IF NOT EXISTS containers(id TEXT PRIMARY KEY, name TEXT, image TEXT, tag TEXT)');
+            this.db.exec('CREATE TABLE IF NOT EXISTS topics(id INTEGER PRIMARY KEY AUTOINCREMENT, topic TEXT, containerId TEXT)');
+            this.db.exec('CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)');
+            this.db.exec('DELETE FROM topics WHERE id NOT IN (SELECT MIN(id) FROM topics GROUP BY topic, containerId)');
+            this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_topics_topic_containerId ON topics(topic, containerId)');
+            logger.info('Database initialized successfully');
+        } catch (err: any) {
+            logger.error(err.message);
         }
-
-        this.initPromise = new Promise((resolve, reject) => {
-            this.connect().serialize(() => {
-                this.connect().run('CREATE TABLE IF NOT EXISTS containers(id TEXT PRIMARY KEY, name TEXT, image TEXT, tag TEXT)', (err: Error | null) => {
-                if (err) {
-                    logger.error(err.message);
-                    reject(err);
-                    return;
-                }
-
-                this.connect().run('CREATE TABLE IF NOT EXISTS topics(id INTEGER PRIMARY KEY AUTOINCREMENT, topic TEXT, containerId TEXT)', (err: Error | null) => {
-                    if (err) {
-                        logger.error(err.message);
-                        reject(err);
-                        return;
-                    }
-
-                    this.connect().run('DELETE FROM topics WHERE id NOT IN (SELECT MIN(id) FROM topics GROUP BY topic, containerId)', (err: Error | null) => {
-                        if (err) {
-                            logger.error(err.message);
-                            reject(err);
-                            return;
-                        }
-
-                        this.connect().run('CREATE UNIQUE INDEX IF NOT EXISTS topics_topic_container_id_idx ON topics(topic, containerId)', (err: Error | null) => {
-                            if (err) {
-                                logger.error(err.message);
-                                reject(err);
-                                return;
-                            }
-
-                            logger.info('Database initialized successfully');
-                            resolve();
-                        });
-                    });
-                });
-            });
-        });
-        });
-
-        return this.initPromise;
     }
 
     /**
@@ -100,7 +35,9 @@ export default class DatabaseService {
      * @param tag The container tag
      */
     public static async addContainer(id: string, name: string, image: string, tag: string) {
-        await this.run('INSERT OR REPLACE INTO containers(id, name, image, tag) VALUES(?, ?, ?, ?)', [id, name, image, tag]);
+        this.db
+            .prepare("INSERT OR REPLACE INTO containers(id, name, image, tag) VALUES(?, ?, ?, ?)")
+            .run(id, name, image, tag);
     }
 
     /**
@@ -108,19 +45,50 @@ export default class DatabaseService {
      * @param topic The subscription topic
      * @param containerId The corresponding container id
      */
-    public static async addTopic(topic: string, containerId: string) {
-        await this.run('INSERT OR IGNORE INTO topics(topic, containerId) VALUES(?, ?)', [topic, containerId]);
+    public static addTopic(topic: string, containerId: string) {
+        this.db
+            .prepare("INSERT OR IGNORE INTO topics(topic, containerId) VALUES(?, ?)")
+            .run(topic, containerId);
     }
 
     /**
-  * Gets all containers from the database.
-  * @param callback The callback function to call with the results
-  */
+     * Gets all stored topics across every container.
+     * @return An array of { topic, containerId } rows.
+     */
+    public static getAllTopics(): any[] {
+        return this.db.prepare('SELECT * FROM topics').all();
+    }
+
+    /**
+     * Reads a value from the key/value meta table (used for one-off migrations).
+     * @param key The meta key
+     * @return The stored value, or undefined if not set
+     */
+    public static getMeta(key: string): string | undefined {
+        const row: any = this.db.prepare('SELECT value FROM meta WHERE key = ?').get(key);
+        return row?.value;
+    }
+
+    /**
+     * Writes a value to the key/value meta table.
+     * @param key The meta key
+     * @param value The value to store
+     */
+    public static setMeta(key: string, value: string) {
+        this.db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)').run(key, value);
+    }
+
+    /**
+     * Gets all containers from the database.
+     * @param callback The callback function to call with the results
+     */
     public static async getContainers(callback: Function) {
-        await this.init();
-        this.connect().all('SELECT * FROM containers', [], (err: any, rows: any) => {
-            callback(err, rows);
-        });
+        try {
+            const rows = this.db.prepare('SELECT * FROM containers').all();
+            callback(null, rows);
+        } catch (err) {
+            callback(err, null);
+        }
     }
 
     /**
@@ -129,56 +97,50 @@ export default class DatabaseService {
      * @param callback The callback function to call with the results
      */
     public static async getContainer(id: string, callback: Function) {
-        await this.init();
-        this.connect().get('SELECT * FROM containers WHERE id = ?', [id], (err: any, row: any) => {
-            callback(err, row);
-        });
+        try {
+            const row = this.db.prepare('SELECT * FROM containers WHERE id = ?').get(id);
+            callback(null, row);
+        } catch (err) {
+            callback(err, null);
+        }
     }
 
     /**
      * Gets all topics for a container from the database.
      * @param containerId The container id
+     * @param callback The callback function to call with the results
      */
     public static async getTopics(containerId: string, callback: Function) {
-        await this.init();
-        this.connect().all('SELECT * FROM topics WHERE containerId = ?', [containerId], (err: any, rows: any) => {
-            callback(err, rows);
-        });
+        try {
+            const rows = this.db.prepare('SELECT * FROM topics WHERE containerId = ?').all(containerId);
+            callback(null, rows);
+        } catch (err) {
+            callback(err, null);
+        }
     }
 
-    public static async getTopicsForContainer(containerId: string): Promise<{ topic: string }[]> {
-        await this.init();
-        return new Promise((resolve, reject) => {
-            this.connect().all('SELECT topic FROM topics WHERE containerId = ?', [containerId], (err: any, rows: { topic: string }[]) => {
-                if (err) {
-                    reject(err);
-                } else {
-                    resolve(rows);
-                }
-            });
-        });
+    public static getTopicsForContainer(containerId: string): { topic: string }[] {
+        return this.db.prepare('SELECT topic FROM topics WHERE containerId = ?').all(containerId) as { topic: string }[];
     }
 
-    public static async deleteTopic(topic: string, containerId: string) {
-        await this.run('DELETE FROM topics WHERE topic = ? AND containerId = ?', [topic, containerId]);
+    public static deleteTopic(topic: string, containerId: string) {
+        this.db.prepare('DELETE FROM topics WHERE topic = ? AND containerId = ?').run(topic, containerId);
     }
-
 
     /**
- * Checks if an container exists in the database.
- * @param id The container id
- * @return Promise<boolean>
- */
+     * Checks if an container exists in the database.
+     * @param id The container id
+     * @return Promise<boolean>
+     */
     public static containerExists(id: string): Promise<boolean> {
-        return this.init().then(() => new Promise((resolve, reject) => {
-            this.connect().get('SELECT * FROM containers WHERE id = ?', [id], (err: any, container: any) => {
-                if (err) {
-                    reject(err);
-                } else {
-                    resolve(!!container);
-                }
-            });
-        }));
+        return new Promise((resolve, reject) => {
+            try {
+                const container = this.db.prepare('SELECT * FROM containers WHERE id = ?').get(id);
+                resolve(!!container);
+            } catch (err) {
+                reject(err);
+            }
+        });
     }
 
     /**
@@ -186,29 +148,22 @@ export default class DatabaseService {
      * @param id The container id
      */
     public static async deleteContainer(id: string) {
-        await this.run('DELETE FROM containers WHERE id = ?', [id]);
-        await this.run('DELETE FROM topics WHERE containerId = ?', [id]);
+        this.db.prepare('DELETE FROM containers WHERE id = ?').run(id);
+        this.db.prepare('DELETE FROM topics WHERE containerId = ?').run(id);
     }
-
 
     /**
      * Closes the database connection.
      */
     public static async close() {
-        if (!this.db) {
-            return;
+        try {
+            this.db.close();
+            logger.info('Closed the database connection.');
+        } catch (err: any) {
+            logger.error(err.message);
         }
-
-        await new Promise<void>((resolve) => {
-            this.db.close((err: any) => {
-                if (err) {
-                    logger.error(err.message);
-                }
-                logger.info('Closed the database connection.');
-                this.db = null;
-                this.initPromise = null;
-                resolve();
-            });
-        });
     }
 }
+
+// Call the init method to ensure the table is created when the class is loaded
+DatabaseService.init();

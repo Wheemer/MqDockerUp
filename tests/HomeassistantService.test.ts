@@ -14,7 +14,36 @@ jest.mock("../src/services/DockerService", () => ({
     listContainers: jest.fn(),
     getImageInfo: jest.fn(),
     getImageNewDigest: jest.fn(),
+    getImageUpdateInfo: jest.fn(),
+    getImageVersionLabel: jest.fn(),
     getSourceRepo: jest.fn(),
+    getImageRegistryName: jest.fn().mockResolvedValue("ghcr.io"),
+    getCreatedBy: jest.fn().mockReturnValue("Docker"),
+    splitImageReference: jest.fn((reference: string | null | undefined) => {
+      if (!reference) {
+        return { image: "unknown", tag: "latest" };
+      }
+
+      const digestIndex = reference.indexOf("@");
+      const imageReference = digestIndex === -1 ? reference : reference.substring(0, digestIndex);
+      const digest = digestIndex === -1 ? undefined : reference.substring(digestIndex + 1);
+      const lastSlashIndex = imageReference.lastIndexOf("/");
+      const lastColonIndex = imageReference.lastIndexOf(":");
+
+      if (lastColonIndex > lastSlashIndex) {
+        return {
+          image: imageReference.substring(0, lastColonIndex),
+          tag: imageReference.substring(lastColonIndex + 1) || "latest",
+          ...(digest ? { digest } : {}),
+        };
+      }
+
+      return {
+        image: imageReference,
+        tag: "latest",
+        ...(digest ? { digest } : {}),
+      };
+    }),
   },
 }));
 
@@ -23,9 +52,9 @@ jest.mock("../src/services/DatabaseService", () => ({
   default: {
     containerExists: jest.fn().mockResolvedValue(false),
     addContainer: jest.fn().mockResolvedValue(undefined),
-    addTopic: jest.fn().mockResolvedValue(undefined),
-    getTopicsForContainer: jest.fn().mockResolvedValue([]),
-    deleteTopic: jest.fn().mockResolvedValue(undefined),
+    addTopic: jest.fn(),
+    getTopicsForContainer: jest.fn().mockReturnValue([]),
+    deleteTopic: jest.fn(),
   },
 }));
 
@@ -37,13 +66,15 @@ jest.mock("../src/services/IgnoreService", () => ({
 }));
 
 import { ContainerInspectInfo } from "dockerode";
-import DockerService from "../src/services/DockerService";
-import DatabaseService from "../src/services/DatabaseService";
-import HomeassistantService from "../src/services/HomeassistantService";
+
+const DockerService = require("../src/services/DockerService").default;
+const DatabaseService = require("../src/services/DatabaseService").default;
+const HomeassistantService = require("../src/services/HomeassistantService").default;
 
 describe("HomeassistantService discovery", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (DatabaseService.getTopicsForContainer as jest.Mock).mockReturnValue([]);
   });
 
   test("uses container names for Home Assistant identity when containers share an image", async () => {
@@ -79,6 +110,7 @@ describe("HomeassistantService discovery", () => {
             state_topic: "mqdockerup/server_esphome",
             device: expect.objectContaining({
               identifiers: ["server_esphome"],
+              name: "esphome",
             }),
           }),
         }),
@@ -89,6 +121,7 @@ describe("HomeassistantService discovery", () => {
             state_topic: "mqdockerup/server_esphomefelishas",
             device: expect.objectContaining({
               identifiers: ["server_esphomefelishas"],
+              name: "esphomefelishas",
             }),
           }),
         }),
@@ -97,12 +130,11 @@ describe("HomeassistantService discovery", () => {
           payload: expect.objectContaining({
             command_topic: "mqdockerup/server_esphome/command/restart",
             command_template: JSON.stringify({ containerId: "container-one", topicName: "server_esphome" }),
-            payload_available: "online",
-            payload_not_available: "offline",
             payload_press: "restart",
             unique_id: "server_esphome_manual_restart",
             device: expect.objectContaining({
               identifiers: ["server_esphome"],
+              name: "esphome",
             }),
           }),
         }),
@@ -115,6 +147,7 @@ describe("HomeassistantService discovery", () => {
             unique_id: "server_esphomefelishas_manual_restart",
             device: expect.objectContaining({
               identifiers: ["server_esphomefelishas"],
+              name: "esphomefelishas",
             }),
           }),
         }),
@@ -122,14 +155,24 @@ describe("HomeassistantService discovery", () => {
           topic: "homeassistant/update/server_esphome/docker_update/config",
           payload: expect.objectContaining({
             command_topic: "mqdockerup/server_esphome/command/update",
+            payload_available: "online",
+            payload_not_available: "offline",
             payload_install: JSON.stringify({ containerId: "container-one", image: "ghcr.io/esphome/esphome", topicName: "server_esphome" }),
+            device: expect.objectContaining({
+              name: "esphome",
+            }),
           }),
         }),
         expect.objectContaining({
           topic: "homeassistant/update/server_esphomefelishas/docker_update/config",
           payload: expect.objectContaining({
             command_topic: "mqdockerup/server_esphomefelishas/command/update",
+            payload_available: "online",
+            payload_not_available: "offline",
             payload_install: JSON.stringify({ containerId: "container-two", image: "ghcr.io/esphome/esphome", topicName: "server_esphomefelishas" }),
+            device: expect.objectContaining({
+              name: "esphomefelishas",
+            }),
           }),
         }),
       ])
@@ -263,50 +306,96 @@ describe("HomeassistantService discovery", () => {
     expect(DockerService.getImageNewDigest).not.toHaveBeenCalled();
     expect(client.publish).toHaveBeenCalledWith(
       "mqdockerup/server_digest_app/update",
+      expect.stringContaining('"title":"digest-app"'),
+      { retain: true }
+    );
+    expect(client.publish).toHaveBeenCalledWith(
+      "mqdockerup/server_digest_app/update",
       expect.stringContaining('"installed_version":"latest: abcdef123456"'),
       { retain: true }
     );
   });
 
-  test("publishes availability values that match discovery payloads", async () => {
+  test("skips update state when a stale container references a missing local image", async () => {
+    const container = {
+      Id: "container-one",
+      Name: "/orcaslicer",
+      Config: { Image: "lscr.io/linuxserver/orcaslicer:latest" },
+    } as unknown as ContainerInspectInfo;
+    const error: any = new Error("No such image: lscr.io/linuxserver/orcaslicer:latest");
+    error.statusCode = 404;
+
+    (DockerService.getImageInfo as jest.Mock).mockRejectedValue(error);
+
     const client = { publish: jest.fn() };
+    await expect(
+      HomeassistantService.publishImageUpdateMessage(container, client)
+    ).resolves.toBeUndefined();
 
-    await HomeassistantService.publishAvailability(client, true);
-    await HomeassistantService.publishAvailability(client, false);
+    expect(DockerService.getImageNewDigest).not.toHaveBeenCalled();
+    expect(client.publish).not.toHaveBeenCalled();
+  });
 
-    expect(client.publish).toHaveBeenNthCalledWith(
-      1,
-      "mqdockerup/availability",
-      "online",
-      { retain: true }
-    );
-    expect(client.publish).toHaveBeenNthCalledWith(
-      2,
-      "mqdockerup/availability",
-      "offline",
-      { retain: true }
+  test("publishes an available update when a semver-pinned GHCR image has a newer release tag", async () => {
+    const container = {
+      Id: "frigate-container",
+      Name: "/frigate",
+      Config: { Image: "ghcr.io/blakeblackshear/frigate:0.17.1" },
+    } as unknown as ContainerInspectInfo;
+
+    (DockerService.getImageInfo as jest.Mock).mockResolvedValue({
+      RepoDigests: ["ghcr.io/blakeblackshear/frigate@sha256:currentdigest"],
+      Config: { Labels: {} },
+    });
+    (DockerService.getImageUpdateInfo as jest.Mock).mockResolvedValue({
+      newDigest: "newdigest",
+      tag: "0.17.2",
+    });
+    (DockerService.getImageVersionLabel as jest.Mock).mockResolvedValue(null);
+    (DockerService.getSourceRepo as jest.Mock).mockResolvedValue("https://github.com/blakeblackshear/frigate");
+
+    const client = { publish: jest.fn() };
+    await HomeassistantService.publishImageUpdateMessage(container, client);
+
+    const updateCall = client.publish.mock.calls.find(([topic]: [string]) => topic === "mqdockerup/server_frigate/update");
+    expect(updateCall).toBeDefined();
+    const payload = JSON.parse(updateCall[1]);
+
+    expect(payload.installed_version).toBe("0.17.1: currentdiges");
+    expect(payload.latest_version).toBe("0.17.2: newdigest");
+    expect(DockerService.getImageVersionLabel).toHaveBeenCalledWith(
+      "ghcr.io/blakeblackshear/frigate",
+      "0.17.2",
+      "newdigest"
     );
   });
 
-  test("publishes non-legacy update progress without nested update payloads", async () => {
-    const container = {
-      Id: "container-one",
-      Name: "/progress-app",
-      Config: { Image: "ghcr.io/example/app:latest" },
-    } as unknown as ContainerInspectInfo;
+  test("keeps checking remaining containers when one update check fails", async () => {
+    const containers = [
+      {
+        Id: "bad-container",
+        Name: "/bad",
+        Config: { Image: "example/bad:latest" },
+      },
+      {
+        Id: "good-container",
+        Name: "/good",
+        Config: { Image: "example/good:latest" },
+      },
+    ] as unknown as ContainerInspectInfo[];
 
-    (DockerService.getImageInfo as jest.Mock).mockResolvedValue({ RepoDigests: ["ghcr.io/example/app@sha256:old"] });
-    (DockerService.getImageNewDigest as jest.Mock).mockResolvedValue("newdigest");
-    (DockerService.getSourceRepo as jest.Mock).mockResolvedValue("https://github.com/example/app");
+    (DockerService.listContainers as jest.Mock).mockResolvedValue(containers);
+    const publishImageUpdateMessage = jest.spyOn(HomeassistantService, "publishImageUpdateMessage")
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockResolvedValueOnce(undefined);
 
-    const client = { publish: jest.fn() };
-    await HomeassistantService.publishImageUpdateMessage(container, client, 42, 10, "installing");
+    await expect(HomeassistantService.publishImageUpdateMessages({ publish: jest.fn() })).resolves.toBeUndefined();
 
-    const [, payload] = client.publish.mock.calls[0];
-    const parsed = JSON.parse(payload);
-    expect(parsed.update_percentage).toBe(42);
-    expect(parsed.in_progress).toBe(true);
-    expect(parsed.update).toBeUndefined();
+    expect(publishImageUpdateMessage).toHaveBeenCalledTimes(2);
+    expect(publishImageUpdateMessage).toHaveBeenNthCalledWith(1, containers[0], expect.any(Object));
+    expect(publishImageUpdateMessage).toHaveBeenNthCalledWith(2, containers[1], expect.any(Object));
+
+    publishImageUpdateMessage.mockRestore();
   });
 
   test("records discovery topics for containers that already exist", async () => {
@@ -342,7 +431,7 @@ describe("HomeassistantService discovery", () => {
 
     (DockerService.listContainers as jest.Mock).mockResolvedValue(containers);
     (DatabaseService.containerExists as jest.Mock).mockResolvedValue(true);
-    (DatabaseService.getTopicsForContainer as jest.Mock).mockResolvedValue([
+    (DatabaseService.getTopicsForContainer as jest.Mock).mockReturnValue([
       { topic: "homeassistant/sensor/server_esphome/docker_id/config" },
       { topic: "homeassistant/sensor/server_ghcr_io_esphome_esphome_latest/docker_id/config" },
     ]);
@@ -352,7 +441,7 @@ describe("HomeassistantService discovery", () => {
 
     expect(client.publish).toHaveBeenCalledWith(
       "homeassistant/sensor/server_ghcr_io_esphome_esphome_latest/docker_id/config",
-      "{}",
+      "",
       { retain: true }
     );
     expect(DatabaseService.deleteTopic).toHaveBeenCalledWith(
@@ -372,7 +461,7 @@ describe("HomeassistantService discovery", () => {
 
     (DockerService.listContainers as jest.Mock).mockResolvedValue(containers);
     (DatabaseService.containerExists as jest.Mock).mockResolvedValue(true);
-    (DatabaseService.getTopicsForContainer as jest.Mock).mockResolvedValue([
+    (DatabaseService.getTopicsForContainer as jest.Mock).mockReturnValue([
       { topic: "homeassistant/button/server_esphome/docker_manual_update/config" },
       { topic: "homeassistant/update/server_esphome/docker_update/config" },
     ]);
@@ -381,5 +470,32 @@ describe("HomeassistantService discovery", () => {
     await HomeassistantService.publishConfigMessages(client);
 
     expect(DatabaseService.deleteTopic).not.toHaveBeenCalled();
+  });
+
+  test("publishes container state safely when HostConfig is missing", async () => {
+    const container = {
+      Id: "container-one",
+      Name: "/minimal-container",
+      Config: { Image: "ghcr.io/example/app:latest" },
+      State: {
+        Status: "running",
+        StartedAt: "2026-06-23T10:00:00Z",
+      },
+      RestartCount: 0,
+      Created: "2026-06-23T09:00:00Z",
+    } as unknown as ContainerInspectInfo;
+
+    const client = { publish: jest.fn() };
+    await HomeassistantService.publishContainerMessage(container, client);
+
+    const [, payload] = client.publish.mock.calls[0];
+    expect(JSON.parse(payload)).toEqual(
+      expect.objectContaining({
+        dockerRestartPolicy: "unknown",
+        dockerPorts: "",
+        dockerRegistry: "ghcr.io",
+        dockerCreatedBy: "Docker",
+      })
+    );
   });
 });
