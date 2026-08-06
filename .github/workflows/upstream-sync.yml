@@ -1,0 +1,129 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    - cron: "22 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  upstream-sync:
+    name: Open PR for upstream changes
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v6.0.3
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/MichelFR/MqDockerUp.git
+          git fetch upstream main --prune
+
+      - name: Merge upstream into sync branch
+        id: merge
+        run: |
+          set -euo pipefail
+
+          if git merge-base --is-ancestor upstream/main origin/main; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git checkout -B automation/upstream-sync origin/main
+          if ! git merge --no-edit --no-ff upstream/main; then
+            git diff --name-only --diff-filter=U > upstream-sync-conflicts.txt
+            git merge --abort || true
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
+
+      - name: Push sync branch
+        if: steps.merge.outputs.has_changes == 'true'
+        run: |
+          git push --force-with-lease origin automation/upstream-sync
+
+      - name: Open or update pull request
+        if: steps.merge.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          existing_pr="$(gh pr list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --head automation/upstream-sync \
+            --base main \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [ -n "${existing_pr}" ]; then
+            gh pr edit "${existing_pr}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "Sync upstream main" \
+              --body "Automated sync PR for changes from MichelFR/MqDockerUp main."
+          else
+            gh pr create \
+              --repo "${GITHUB_REPOSITORY}" \
+              --base main \
+              --head automation/upstream-sync \
+              --title "Sync upstream main" \
+              --body "Automated sync PR for changes from MichelFR/MqDockerUp main."
+          fi
+
+      - name: Open or update conflict issue
+        if: steps.merge.outputs.has_conflicts == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          conflict_list="$(sed 's/^/- `/' upstream-sync-conflicts.txt | sed 's/$/`/')"
+          body="$(cat <<EOF
+          Automated upstream sync could not create a PR because the merge from MichelFR/MqDockerUp main has conflicts.
+
+          Conflicted files:
+          ${conflict_list}
+
+          Resolve these manually, then close this issue. The sync workflow will keep checking upstream on its schedule.
+          EOF
+          )"
+
+          existing_issue="$(gh issue list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --state open \
+            --search "Upstream sync conflicts in:title" \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [ -n "${existing_issue}" ]; then
+            gh issue edit "${existing_issue}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --body "${body}"
+          else
+            gh issue create \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "Upstream sync conflicts" \
+              --body "${body}"
+          fi
