@@ -34,8 +34,7 @@ export default class HomeassistantService {
     const containers = await DockerService.listContainers();
 
     for (const container of containers) {
-      const image = container.Config.Image.split(":")[0];
-      const tag = container.Config.Image.split(":")[1] || "latest";
+      const {image, tag} = DockerService.splitImageReference(container.Config?.Image);
       const containerName = `${container.Name.substring(1)}`;
       let containerIsInDb = false;
 
@@ -514,8 +513,7 @@ export default class HomeassistantService {
       }
     }
 
-    const image = container.Config.Image.split(":")[0];
-    const tag = container.Config.Image.split(":")[1] || "latest";
+    const {image, tag} = DockerService.splitImageReference(container.Config?.Image);
 
     let imageInfo: ImageInspectInfo | null = null;
     try {
@@ -620,8 +618,7 @@ export default class HomeassistantService {
    * @param client
    */
   public static async publishContainerMessage(container: ContainerInspectInfo, client: any) {
-    const image = container.Config.Image.split(":")[0];
-    const tag = container.Config.Image.split(":")[1] || "latest";
+    const {image, tag} = DockerService.splitImageReference(container.Config?.Image);
     const containerName = container.Name.substring(1);
 
     let dockerPorts = "";
