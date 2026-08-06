@@ -6,15 +6,15 @@
 [![Release](https://github.com/Wheemer/MqDockerUp/actions/workflows/release.yml/badge.svg)](https://github.com/Wheemer/MqDockerUp/actions/workflows/release.yml)
 [![Support](https://img.shields.io/badge/support-PayPal-blue)](https://www.paypal.me/wheemer)
 
-# MqDockerUp Wheemer Edition
+# MqDockerUp Container Identity Edition
 
-MqDockerUp Wheemer Edition is a maintained Home Assistant focused build of MqDockerUp. It monitors Docker containers, publishes container state and update data to MQTT, creates Home Assistant discovery entities, and lets you start, stop, pause, restart, and update containers from MQTT or Home Assistant.
+MqDockerUp Container Identity Edition is a Home Assistant focused build of MqDockerUp. It monitors Docker containers, publishes container state and update data to MQTT, creates Home Assistant discovery entities, and lets you start, stop, pause, restart, and update containers from MQTT or Home Assistant.
 
-This fork exists because Home Assistant needs stable per-container identity. If several containers use the same image and tag, image-based discovery can collapse them into one device or route commands to the wrong container. This edition scopes discovery, state topics, command topics, and update payloads by container so each container remains distinct and controllable.
+This build exists because Home Assistant needs stable per-container identity. If several containers use the same image and tag, image-based discovery can collapse them into one device or route commands to the wrong container. Container Identity Edition scopes discovery, state topics, command topics, and update payloads by container so each container remains distinct and controllable.
 
 ## Version 2.0.0
 
-Version 2.0.0 is the first major Wheemer-maintained release. It turns the fork into the supported line for Home Assistant Docker update dashboards, with duplicate-image deployments treated as first-class instead of edge cases.
+Version 2.0.0 is the first major Container Identity release. It turns this build into the supported line for Home Assistant Docker update dashboards, with duplicate-image deployments treated as first-class instead of edge cases.
 
 - Update entities now install against the intended container ID and publish progress without breaking modern Home Assistant update payloads.
 - Discovery, command, state, and update topics are scoped by container topic name, while legacy flat command topics still work for older setups.
@@ -284,7 +284,7 @@ You can use some of these labels on individual containers to apply to them the e
 
 ## Contribute
 
-This project is open source and contributions are welcome. If you are running the Wheemer Edition and find a Home Assistant discovery, update, or command-routing issue, please open an issue or pull request here.
+This project is open source and contributions are welcome. If you are running Container Identity Edition and find a Home Assistant discovery, update, or command-routing issue, please open an issue or pull request here.
 
 ## Support
 
