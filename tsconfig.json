@@ -9,9 +9,9 @@
   "allowSyntheticDefaultImports": true,
   "compilerOptions": {
     "resolveJsonModule": true,
+    "types": ["node", "jest"],
     "incremental": true,
     "composite": true,
-    "baseUrl": "src",
     "outDir": "./dist",
     "target": "es2016",
     "module": "commonjs",
