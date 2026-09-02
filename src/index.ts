@@ -11,7 +11,8 @@ const _ = require('lodash');
 require('source-map-support').install();
 
 const config = ConfigService.getConfig();
-const availabilityTopic = `${config.mqtt.topic}/availability`;
+const baseTopic: string = config.mqtt.topic;
+const availabilityTopic = `${baseTopic}/availability`;
 const isContainerCheckOnChangesEnabled = ConfigService.autoParseEnvVariable(config.main.containerCheckOnChanges) !== false;
 
 const client = mqtt.connect(config.mqtt.connectionUri, {
@@ -32,55 +33,43 @@ const client = mqtt.connect(config.mqtt.connectionUri, {
 
 logger.level = ConfigService?.getConfig()?.logs?.level;
 
-// Track connection state
 let isConnected = false;
-let reconnectCount = 0;
-const MAX_RECONNECT_DELAY = ConfigService.autoParseEnvVariable(config.mqtt.maxReconnectDelay) * 1000 || 300000;
 
 export const mqttClient = client;
 
-// Check for new/old containers and publish updates
-const checkAndPublishContainerMessages = async (): Promise<void> => {
-  logger.info("Checking for removed containers...");
-  const containers = await DockerService.listContainers();
-  const runningContainerIds = containers.map(container => container.Id);
-
-  // Get all container IDs in the database
-  DatabaseService.getContainers((err: any, rows: any) => {
-    if (err) {
-      logger.error(err);
-      return;
-    }
-
-    // Iterate over each container in the database
-    rows.forEach((container: any) => {
-
-      // If the container is not in the running containers list, then it has stopped
-      if (!runningContainerIds.includes(container.id)) {
-        // Get the topics associated with this container
-        DatabaseService.getTopics(container.id, (err: any, topics: any) => {
-          if (err) {
-            logger.error(err);
-            return;
-          }
-
-          // Iterate over each topic and publish an empty message
-          topics.forEach((topic: any) => {
-            HomeassistantService.publishMessage(client, topic.topic, "", { retain: true, qos: 0 });
-          });
-
-          // Remove the container and its associated topics from the database
-          logger.info(`Removed missing container ${container.name} from Home Assistant and database.`);
-          DatabaseService.deleteContainer(container.id);
-        });
+/** Reads all containers known to the database. */
+const getStoredContainers = (): Promise<any[]> =>
+  new Promise((resolve) => {
+    DatabaseService.getContainers((err: any, rows: any[]) => {
+      if (err) {
+        logger.error(err);
+        resolve([]);
+        return;
       }
+      resolve(rows);
     });
   });
 
+/** Removes containers from Home Assistant that are in the database but no longer exist in Docker. */
+const removeVanishedContainers = async (existingContainerIds: string[]): Promise<void> => {
+  logger.info("Checking for removed containers...");
+  for (const stored of await getStoredContainers()) {
+    if (!existingContainerIds.includes(stored.id)) {
+      await HomeassistantService.removeContainer(client, stored.id);
+      logger.info(`Removed missing container ${stored.name} from Home Assistant and database.`);
+    }
+  }
+};
+
+/** Full sweep: reconcile every container with Home Assistant. Runs at startup and on the interval. */
+const checkAndPublishContainerMessages = async (): Promise<void> => {
   logger.info("Checking for containers...");
-  await HomeassistantService.publishConfigMessages(client);
+  const containers = await DockerService.listContainers();
+
+  await removeVanishedContainers(containers.map((container) => container.Id));
   await HomeassistantService.publishAvailability(client, true);
-  await HomeassistantService.publishContainerMessages(client);
+  await HomeassistantService.publishConfigMessages(client, containers);
+  await HomeassistantService.publishContainerMessages(client, containers);
 
   logger.info("Finished checking for containers");
   logger.info(`Next check in ${TimeService.formatDuration(TimeService.parseDuration(config.main.containerCheckInterval))}`);
@@ -94,25 +83,68 @@ const checkAndPublishImageUpdateMessages = async (): Promise<void> => {
   logger.info(`Next check in ${TimeService.formatDuration(TimeService.parseDuration(config.main.updateCheckInterval))}`);
 };
 
-let containerCheckingIntervalId: NodeJS.Timeout;
+/**
+ * Targeted refresh of a single container after a Docker event or a command:
+ * republish it if it still exists, otherwise remove it from Home Assistant.
+ * @param containerId The affected container
+ * @param renamed Whether the container was renamed, which moves its topics
+ */
+const refreshContainer = async (containerId: string, renamed = false): Promise<void> => {
+  try {
+    if (renamed) {
+      // Topics are keyed by container name; clear the ones under the old name.
+      await HomeassistantService.removeContainer(client, containerId);
+    }
 
-const startContainerCheckingInterval = async () => {
-  logger.verbose(`Setting up startContainerCheckingInterval with value ${config.main.containerCheckInterval}`);
-  containerCheckingIntervalId = setInterval(checkAndPublishContainerMessages, TimeService.parseDuration(config.main.containerCheckInterval));
+    const container = await DockerService.getMonitoredContainer(containerId);
+    if (container) {
+      await HomeassistantService.publishContainer(client, container);
+    } else if (await HomeassistantService.removeContainer(client, containerId)) {
+      logger.info(`Removed missing container ${containerId.substring(0, 12)} from Home Assistant and database.`);
+    }
+  } catch (error) {
+    logger.error(`Failed to refresh container ${containerId.substring(0, 12)}:`, error);
+  }
 };
 
-let imageCheckingInterval: NodeJS.Timeout;
+// The connect handler runs again on every reconnect; the intervals must
+// only be created once or the sweeps multiply.
+let intervalsStarted = false;
 
-const startImageCheckingInterval = async () => {
+const startContainerCheckingInterval = () => {
+  logger.verbose(`Setting up startContainerCheckingInterval with value ${config.main.containerCheckInterval}`);
+  setInterval(checkAndPublishContainerMessages, TimeService.parseDuration(config.main.containerCheckInterval));
+};
+
+const startImageCheckingInterval = () => {
   logger.verbose(`Setting up startImageCheckingInterval with value ${config.main.updateCheckInterval}`);
-  imageCheckingInterval = setInterval(checkAndPublishImageUpdateMessages, TimeService.parseDuration(config.main.updateCheckInterval));
+  setInterval(checkAndPublishImageUpdateMessages, TimeService.parseDuration(config.main.updateCheckInterval));
+};
+
+/**
+ * Commands Home Assistant can send on `<baseTopic>/<command>` with a
+ * `{ containerId }` payload. Updates publish the new container themselves;
+ * every other command is followed by a targeted refresh of the container.
+ */
+const commands: Record<string, { run: (containerId: string) => Promise<unknown>; done: string; refresh: boolean }> = {
+  update: { run: (id) => DockerService.updateContainer(id), done: "Updated container", refresh: false },
+  manualUpdate: { run: (id) => DockerService.updateContainer(id), done: "Updated container", refresh: false },
+  restart: { run: (id) => DockerService.restartContainer(id), done: "Restarted container", refresh: true },
+  start: { run: (id) => DockerService.startContainer(id), done: "Started container", refresh: true },
+  stop: { run: (id) => DockerService.stopContainer(id), done: "Stopped container", refresh: true },
+  pause: { run: (id) => DockerService.pauseContainer(id), done: "Paused container", refresh: true },
+  unpause: { run: (id) => DockerService.unpauseContainer(id), done: "Unpaused container", refresh: true },
 };
 
 // Connected to MQTT broker
 client.on('connect', async function () {
   logger.info('MQTT client successfully connected');
+  isConnected = true;
 
-  // Publish availability as online
+  // The broker may have restarted and lost its retained messages, so
+  // everything has to be published again.
+  HomeassistantService.resetPublishCache();
+
   await HomeassistantService.publishAvailability(client, true);
 
   // One-off cleanup of legacy (image-based) discovery topics before publishing
@@ -124,184 +156,55 @@ client.on('connect', async function () {
     logger.warn('Skipping setup of container checking cause all containers is ignored `ignore.containers="*"`.')
   } else {
     await checkAndPublishContainerMessages();
-    startContainerCheckingInterval();
+    if (!intervalsStarted) startContainerCheckingInterval();
   }
 
   if (config?.ignore?.updates == "*") {
     logger.warn('Skipping setup of image update checking cause all containers update is ignored `ignore.updates="*"`.')
   } else {
     await checkAndPublishImageUpdateMessages();
-    startImageCheckingInterval();
+    if (!intervalsStarted) startImageCheckingInterval();
   }
+  intervalsStarted = true;
 
-  client.subscribe(`${config.mqtt.topic}/update`);
-  client.subscribe(`${config.mqtt.topic}/restart`);
-  client.subscribe(`${config.mqtt.topic}/start`);
-  client.subscribe(`${config.mqtt.topic}/stop`);
-  client.subscribe(`${config.mqtt.topic}/pause`);
-  client.subscribe(`${config.mqtt.topic}/unpause`);
-  client.subscribe(`${config.mqtt.topic}/manualUpdate`);
+  client.subscribe(Object.keys(commands).map((command) => `${baseTopic}/${command}`));
+});
+
+client.on('close', () => {
+  isConnected = false;
 });
 
 client.on('error', function (err) {
   logger.error('MQTT client connection error: ', err);
 });
-// Update-Handler for the /update message from MQTT
+
 client.on("message", async (topic: string, message: any) => {
-  if (topic == `${config.mqtt.topic}/update`) {
-    let data;
-    try {
-      data = JSON.parse(message);
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.warn(`Failed to parse message: ${message}. Error: ${error.message}`);
-      } else {
-        logger.warn(`Failed to parse message: ${message}. Error: ${String(error)}`);
-      }
-      return;
-    }
+  const commandName = topic.startsWith(`${baseTopic}/`) ? topic.substring(baseTopic.length + 1) : "";
+  const command = commands[commandName];
+  if (!command) {
+    return;
+  }
 
-    // Update-Handler for the /update message from MQTT
-    // This is triggered by the Home Assistant button in the UI to update a container
-    if (data?.containerId) {
-      const image = data?.image;
-      logger.info(`Got update message for ${image}`);
-      await DockerService.updateContainer(data?.containerId);
-      logger.info("Updated container");
-      await checkAndPublishContainerMessages();
-      await checkAndPublishImageUpdateMessages();
-    }
-  } else if (topic == `${config.mqtt.topic}/restart`) {
-    let data;
-    try {
-      data = JSON.parse(message);
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.warn(`Failed to parse message: ${message}. Error: ${error.message}`);
-      } else {
-        logger.warn(`Failed to parse message: ${message}. Error: ${String(error)}`);
-      }
-      return;
-    }
+  let data: any;
+  try {
+    data = JSON.parse(message);
+  } catch (error) {
+    logger.warn(`Failed to parse message: ${message}. Error: ${error instanceof Error ? error.message : String(error)}`);
+    return;
+  }
 
-    if (data?.containerId) {
-      logger.info(`Got restart message for ${data?.containerId}`);
-      await DockerService.restartContainer(data?.containerId);
-      logger.info("Restarted container");
-    }
+  if (!data?.containerId) {
+    return;
+  }
 
-    await checkAndPublishContainerMessages();
-  } else if (topic == `${config.mqtt.topic}/start`) {
-    let data;
-    try {
-      data = JSON.parse(message);
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.warn(`Failed to parse message: ${message}. Error: ${error.message}`);
-      } else {
-        logger.warn(`Failed to parse message: ${message}. Error: ${String(error)}`);
-      }
-      return;
-    }
+  logger.info(`Got ${commandName} message for ${data.containerId}`);
+  await command.run(data.containerId);
+  logger.info(command.done);
 
-    if (data?.containerId) {
-      logger.info(`Got start message for ${data?.containerId}`);
-      await DockerService.startContainer(data?.containerId);
-      logger.info("Started container");
-    }
-
-    await checkAndPublishContainerMessages();
-  } else if (topic == `${config.mqtt.topic}/stop`) {
-    let data;
-    try {
-      data = JSON.parse(message);
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.warn(`Failed to parse message: ${message}. Error: ${error.message}`);
-      } else {
-        logger.warn(`Failed to parse message: ${message}. Error: ${String(error)}`);
-      }
-      return;
-    }
-
-    if (data?.containerId) {
-      logger.info(`Got stop message for ${data?.containerId}`);
-      await DockerService.stopContainer(data?.containerId);
-      logger.info("Stopped container");
-    }
-
-    await checkAndPublishContainerMessages();
-  } else if (topic == `${config.mqtt.topic}/pause`) {
-    let data;
-    try {
-      data = JSON.parse(message);
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.warn(`Failed to parse message: ${message}. Error: ${error.message}`);
-      } else {
-        logger.warn(`Failed to parse message: ${message}. Error: ${String(error)}`);
-      }
-      return;
-    }
-
-    if (data?.containerId) {
-      logger.info(`Got pause message for ${data?.containerId}`);
-      await DockerService.pauseContainer(data?.containerId);
-      logger.info("Paused container");
-    }
-
-    await checkAndPublishContainerMessages();
-  } else if (topic == `${config.mqtt.topic}/unpause`) {
-    let data;
-    try {
-      data = JSON.parse(message);
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.warn(`Failed to parse message: ${message}. Error: ${error.message}`);
-      } else {
-        logger.warn(`Failed to parse message: ${message}. Error: ${String(error)}`);
-      }
-      return;
-    }
-
-    if (data?.containerId) {
-      logger.info(`Got unpause message for ${data?.containerId}`);
-      await DockerService.unpauseContainer(data?.containerId);
-      logger.info("Unpaused container");
-    }
-
-    await checkAndPublishContainerMessages();
-  } else if (topic == `${config.mqtt.topic}/manualUpdate`) {
-    let data;
-    try {
-      data = JSON.parse(message);
-    } catch (error) {
-      if (error instanceof Error) {
-        logger.warn(`Failed to parse message: ${message}. Error: ${error.message}`);
-      } else {
-        logger.warn(`Failed to parse message: ${message}. Error: ${String(error)}`);
-      }
-      return;
-    }
-
-    if (data?.containerId) {
-      logger.info(`Got manual update message for ${data?.containerId}`);
-      await DockerService.updateContainer(data?.containerId);
-      logger.info("Updated container");
-      await checkAndPublishContainerMessages();
-    }
+  if (command.refresh) {
+    await refreshContainer(data.containerId);
   }
 });
-
-// Docker event handlers
-const containerEventHandler = _.debounce((eventName: string, data: { containerName: string, containerId: string }) => {
-  logger.info(`Container ${eventName}: ${data.containerName} (${data.containerId})`);
-}, 300);
-
-// Debounced container check to avoid multiple rapid checks
-const debouncedContainerCheck = _.debounce(() => {
-  checkAndPublishContainerMessages();
-}, 2000); // Wait 2 seconds after last event before checking
 
 // Map Docker event action to a more human readable log string
 const eventMap: Record<string, string> = {
@@ -318,13 +221,31 @@ const eventMap: Record<string, string> = {
   restart: 'restarted',
 };
 
+// Containers touched by Docker events since the last flush. Events are
+// batched for 2 seconds and then only the affected containers are refreshed,
+// instead of republishing the whole fleet on every event.
+const pendingContainerIds = new Set<string>();
+const renamedContainerIds = new Set<string>();
+
+const flushPendingContainerRefreshes = _.debounce(async () => {
+  const containerIds = [...pendingContainerIds];
+  pendingContainerIds.clear();
+
+  for (const containerId of containerIds) {
+    const renamed = renamedContainerIds.delete(containerId);
+    await refreshContainer(containerId, renamed);
+  }
+}, 2000);
+
 if (isContainerCheckOnChangesEnabled) {
-  // Register listeners for Docker events
   Object.entries(eventMap).forEach(([eventName, logName]) => {
-    DockerService.events.on(eventName, (data) => {
-      containerEventHandler(logName, data);
-      // Use debounced check to batch multiple events that happen close together
-      debouncedContainerCheck();
+    DockerService.events.on(eventName, ({ containerName, containerId }: { containerName: string; containerId: string }) => {
+      logger.info(`Container ${logName}: ${containerName} (${containerId})`);
+      if (eventName === 'rename') {
+        renamedContainerIds.add(containerId);
+      }
+      pendingContainerIds.add(containerId);
+      flushPendingContainerRefreshes();
     });
   });
 
@@ -345,11 +266,11 @@ const exitHandler = async (exitCode: number, error?: any) => {
 
   try {
     logger.info("Shutting down MqDockerUp...");
-    
+
     if (isConnected) {
       await HomeassistantService.publishAvailability(client, false);
     }
-    
+
     const updatingContainers = DockerService.updatingContainers;
 
     if (updatingContainers.length > 0) {
@@ -367,7 +288,7 @@ const exitHandler = async (exitCode: number, error?: any) => {
         logger.info("MQTT connection closed successfully");
         resolve();
       });
-      
+
       setTimeout(() => {
         logger.warn("MQTT connection close timed out");
         resolve();

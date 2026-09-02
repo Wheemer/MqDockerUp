@@ -16,7 +16,8 @@ export default class DockerService {
   public static docker = new Docker();
   public static events = new EventEmitter();
   public static updatingContainers: string[] = [];
-  public static SourceUrlCache = new Map<string, string>();
+  /** Source repository URL per image reference; null marks a lookup that found nothing. */
+  public static SourceUrlCache = new Map<string, string | null>();
 
   // Start listening to Docker events
   public static listenToDockerEvents() {
@@ -87,6 +88,28 @@ export default class DockerService {
 
 
   /**
+   * Returns the inspect information for a single container, or null if it no
+   * longer exists or is excluded by the ignore rules.
+   *
+   * @param containerId - The ID of the container.
+   */
+  public static async getMonitoredContainer(containerId: string): Promise<ContainerInspectInfo | null> {
+    const [container] = await DockerService.docker.listContainers({all: true, filters: {id: [containerId]}});
+    if (!container || IgnoreService.ignoreContainer(container)) {
+      return null;
+    }
+
+    try {
+      return await DockerService.docker.getContainer(container.Id).inspect();
+    } catch (err: any) {
+      if (err.statusCode === 404) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /**
    * Gets the Docker image registry for the specified image name.
    *
    * @param imageName - The name of the Docker image.
@@ -153,53 +176,53 @@ export default class DockerService {
    * @throws An error if the source repository could not be found.
    */
   public static async getSourceRepo(imageName: string, imageTag: string): Promise<string | null> {
-    // Check cache first
-    const cachedUrl = DockerService.SourceUrlCache.get(imageName) ?? DockerService.SourceUrlCache.get(imageName + ":" + imageTag);
-    if (cachedUrl) {
-      return cachedUrl;
+    const cacheKey = `${imageName}:${imageTag}`;
+    if (DockerService.SourceUrlCache.has(cacheKey)) {
+      return DockerService.SourceUrlCache.get(cacheKey) ?? null;
     }
 
-    // Try method 1: Check Docker labels
-    const labels = await DockerService.getImageInfo(imageName + ":" + imageTag).then(
-      (info) => info.Config.Labels
-    ).catch((error) => {
-      logger.error("Error getting image info:", error
-      );
-    });
+    const url = await DockerService.lookupSourceRepo(imageName, imageTag);
+    // Cache misses too: the answer does not change between checks, and
+    // re-asking Docker Hub for every unlabeled image on every cycle is
+    // pointless load.
+    DockerService.SourceUrlCache.set(cacheKey, url);
+    return url;
+  }
+
+  /**
+   * Looks up the source repository for an image, first via the OCI source
+   * label and then via the Docker Hub description.
+   */
+  private static async lookupSourceRepo(imageName: string, imageTag: string): Promise<string | null> {
+    const labels = await DockerService.getImageInfo(`${imageName}:${imageTag}`)
+      .then((info) => info.Config.Labels)
+      .catch((error) => {
+        logger.error("Error getting image info:", error);
+      });
 
     if (labels && labels["org.opencontainers.image.source"]) {
-      const url = labels["org.opencontainers.image.source"];
-      DockerService.SourceUrlCache.set(imageName + ":" + imageTag, url);
-      return url;
+      return labels["org.opencontainers.image.source"];
     }
 
-    // Try method 2: Check Docker Hub API
     const dockerHubUrl = `https://hub.docker.com/v2/repositories/${imageName}`;
     const response = await axios.get(dockerHubUrl).catch((error) => {
-      if (error.response.status === 404) {
+      if (error.response?.status === 404) {
         logger.info(`Repository not found: ${imageName}`);
       } else {
         logger.error("Error accessing Docker Hub API:", error);
       }
     });
 
-    if (response && response.status === 200) {
-      const data = response.data;
-      const fullDescription = data.full_description || "";
-      if (!fullDescription.toLowerCase().includes("[github]")) {
-        return null;
-      }
-
-      const url = this.parseGithubUrl(fullDescription);
-
-      // Cache URL
-      if (url !== null) {
-        DockerService.SourceUrlCache.set(imageName, url);
-        return url;
-      }
+    if (!response || response.status !== 200) {
+      return null;
     }
 
-    return null;
+    const fullDescription: string = response.data.full_description || "";
+    if (!fullDescription.toLowerCase().includes("[github]")) {
+      return null;
+    }
+
+    return this.parseGithubUrl(fullDescription);
   }
 
   /**
@@ -391,7 +414,11 @@ export default class DockerService {
                   throw error;
                 }
 
-                // The new container is up — the old one can go now.
+                // The new container is up — the old one can go now. Forget it
+                // in the database first: its discovery topics are keyed by
+                // container name and live on for the new container, so they
+                // must not be cleared when the destroy event arrives.
+                await DatabaseService.deleteContainer(containerId);
                 await container.remove();
 
                 // Remove the old container ID from updatingContainers immediately after removal
@@ -424,34 +451,9 @@ export default class DockerService {
                 // Publish final 100% progress with the NEW container info
                 await HomeassistantService.publishUpdateProgressMessage(newContainerInfo, mqttClient, 100, false);
 
-                // Clean up old container from Home Assistant and database
-                const newImage = newContainerInfo.Config.Image.split(":")[0];
-                const newTag = newContainerInfo.Config.Image.split(":")[1] || "latest";
-                const newName = newContainerInfo.Name.startsWith("/") ? newContainerInfo.Name.substring(1) : newContainerInfo.Name;
-                
-                // Get topics for old container and publish empty messages to remove from HA
-                await new Promise<void>((resolve) => {
-                  DatabaseService.getTopics(containerId, (err: any, topics: any) => {
-                    if (err) {
-                      logger.error("Error getting topics for cleanup: " + err);
-                      resolve();
-                      return;
-                    }
-                    
-                    // Publish empty messages to all old topics
-                    topics.forEach((topic: any) => {
-                      HomeassistantService.publishMessage(mqttClient, topic.topic, "", { retain: true, qos: 0 });
-                    });
-                    
-                    resolve();
-                  });
-                });
-                
-                // Now remove old container from database and add new one
-                await DatabaseService.deleteContainer(containerId);
-                await DatabaseService.addContainer(newContainerInfo.Id, newName, newImage, newTag);
-                
-                // Republish update message to show as up-to-date
+                // Publish the new container under the (unchanged) device name
+                // and report it as up-to-date.
+                await HomeassistantService.publishContainer(mqttClient, newContainerInfo);
                 await HomeassistantService.publishImageUpdateMessage(newContainerInfo, mqttClient);
 
                 return newContainer;
@@ -598,14 +600,10 @@ export default class DockerService {
   /**
    * Parses a GitHub URL from a full description.
    * @param fullDescription - The full description to parse.
-   * @returns The GitHub URL or `null` if it could not be parsed.
+   * @returns The URL of the `[github](...)` markdown link, or `null` if there is none.
    */
   private static parseGithubUrl(fullDescription: string): string | null {
-    const startIndex = fullDescription.indexOf("[github");
-    const endIndex = fullDescription.indexOf("]", startIndex);
-    if (startIndex !== -1 && endIndex !== -1) {
-      return fullDescription.slice(startIndex, endIndex).replace("[github]", "");
-    }
-    return null;
+    const match = fullDescription.match(/\[github\]\((https?:\/\/[^)\s]+)\)/i);
+    return match ? match[1] : null;
   }
 }
