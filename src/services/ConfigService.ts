@@ -56,7 +56,6 @@ export default class ConfigService {
           clientId: "mqdockerup",
           username: "ha",
           password: "",
-          haLegacy: false,
           connectTimeout: 60,
           protocolVersion: 5,
           maxReconnectDelay: 300, // Maximum reconnect delay in seconds
@@ -143,6 +142,11 @@ export default class ConfigService {
           config.main["updateCheckInterval"] = config.main["imageUpdateInterval"];
         }
 
+      }
+
+      if (config.mqtt?.haLegacy !== undefined || process.env.MQTT_HALEGACY !== undefined) {
+        logger.warn("The property `mqtt.haLegacy`/`MQTT_HALEGACY` was removed in v2.2.0 and is ignored. The update entity always uses the Home Assistant 2024.11+ format.");
+        delete config.mqtt.haLegacy;
       }
 
       // #endregion "Deprecation"

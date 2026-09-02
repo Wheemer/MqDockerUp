@@ -9,7 +9,6 @@ import TopicService from "./TopicService";
 const config = ConfigService.getConfig();
 const packageJson = require("../../package");
 
-const haLegacy = ConfigService.autoParseEnvVariable(config.mqtt?.haLegacy)
 const suggestedArea = config.mqtt?.suggestedArea ?? "Docker";
 
 interface PublishOptions {
@@ -460,36 +459,16 @@ export default class HomeassistantService {
     const installedVersion = `${tag}: ${currentDigest.substring(0, 12)}`;
     const latestVersion = `${tag}: ${newDigest.substring(0, 12)}`;
 
-    let updatePayload: any;
-    if (haLegacy) {
-      updatePayload = {
-        installed_version: installedVersion,
-        latest_version: latestVersion,
-        release_notes: null,
-        release_url: null,
-        entity_picture: null,
-        title: `${image}:${tag}`,
-        progress: 0,
-        update: {
-          state: currentDigest !== newDigest ? "available" : "idle",
-          installed_version: installedVersion,
-          latest_version: latestVersion,
-          progress: 0,
-          remaining: 0,
-        }
-      };
-    } else {
-      updatePayload = {
-        installed_version: installedVersion,
-        latest_version: latestVersion,
-        release_summary: "",
-        release_url: `${sourceRepo ? sourceRepo : "https://github.com/MichelFR/MqDockerUp"}/releases`,
-        entity_picture: "https://raw.githubusercontent.com/MichelFR/MqDockerUp/refs/heads/main/assets/logo_200x200.png",
-        title: `${image}:${tag}`,
-        in_progress: false,
-        update_percentage: null,
-      };
-    }
+    const updatePayload = {
+      installed_version: installedVersion,
+      latest_version: latestVersion,
+      release_summary: "",
+      release_url: `${sourceRepo ? sourceRepo : "https://github.com/MichelFR/MqDockerUp"}/releases`,
+      entity_picture: "https://raw.githubusercontent.com/MichelFR/MqDockerUp/refs/heads/main/assets/logo_200x200.png",
+      title: `${image}:${tag}`,
+      in_progress: false,
+      update_percentage: null,
+    };
 
     this.publishMessage(client, updateTopic, updatePayload, {retain: true});
   }
