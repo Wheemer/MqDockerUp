@@ -9,18 +9,6 @@ import DatabaseService from "./DatabaseService";
 import axios, { AxiosInstance } from 'axios';
 import {mqttClient} from "../index";
 
-// Add interface for mount types
-interface DockerMount {
-  Name?: string;
-  Type: 'bind' | 'volume' | 'tmpfs';
-  Source: string;
-  Destination: string;
-  Driver?: string;
-  Mode: string;
-  RW: boolean;
-  Propagation: string;
-}
-
 /**
  * Represents a Docker service for managing Docker containers and images.
  */
@@ -324,6 +312,7 @@ export default class DockerService {
             async (err: any) => {
               if (err) {
                 logger.error("Stream Error: " + err);
+                this.updatingContainers = this.updatingContainers.filter((id) => id !== containerId);
                 return;
               }
 
@@ -351,41 +340,62 @@ export default class DockerService {
               // The container will start with a new ID
               containerConfig.Id = "";
 
-              const mounts = info.Mounts as DockerMount[];
-              // Handle different mount types properly
-              const binds: string[] = [];
-              const volumes: { [key: string]: {} } = {};
-
-              mounts.forEach((mount) => {
-                if (mount.Type === 'bind') {
-                  binds.push(`${mount.Source}:${mount.Destination}${mount.Mode ? ':' + mount.Mode : ''}`);
-                } else if (mount.Type === 'volume') {
-                  // For named volumes, we just need to ensure they're in the volumes configuration
-                  const volumeName = mount.Name || mount.Source;
-                  volumes[volumeName] = {};
-                }
-              });
-
-              containerConfig.HostConfig.Binds = binds;
-              containerConfig.Volumes = volumes;
+              // Mounts need no special handling: info.HostConfig.Binds and
+              // info.HostConfig.Mounts are passed through verbatim, which
+              // preserves bind mounts, named volumes, tmpfs, and all their
+              // flags exactly as the container was created with.
 
               logger.debug(`Container config prepared for update: ${JSON.stringify(containerConfig, null, 2)}`);
 
 
+              const wasRunning = info.State?.Running === true;
+              let newContainer: Docker.Container | undefined;
               try {
-                await container.stop();
+                // Stop the old container, tolerating one that is already
+                // stopped (Docker answers 304 in that case).
+                try {
+                  await container.stop();
+                } catch (err: any) {
+                  if (err.statusCode !== 304) {
+                    throw err;
+                  }
+                }
+
+                // Rename the old container out of the way instead of removing
+                // it, so a failed creation can be rolled back without losing
+                // the container.
+                const backupName = `${containerConfig.name}_mqdockerup_old`;
+                await container.rename({ name: backupName });
+
+                try {
+                  newContainer = await DockerService.docker.createContainer(containerConfig);
+
+                  // Reattach the remaining networks before starting so DNS
+                  // and service discovery work from the first moment.
+                  await DockerService.reconnectSecondaryNetworks(endpointsConfig, primaryNetwork, newContainer.id, containerConfig.name);
+
+                  await newContainer.start();
+                } catch (error) {
+                  logger.error(`Failed to recreate container ${containerConfig.name}, rolling back to the old container`);
+                  try {
+                    if (newContainer) {
+                      await newContainer.remove({ force: true });
+                    }
+                    await container.rename({ name: containerConfig.name });
+                    if (wasRunning) {
+                      await container.start();
+                    }
+                  } catch (rollbackError) {
+                    logger.error(`Rollback of container ${containerConfig.name} failed: ${rollbackError}`);
+                  }
+                  throw error;
+                }
+
+                // The new container is up — the old one can go now.
                 await container.remove();
-                
+
                 // Remove the old container ID from updatingContainers immediately after removal
                 this.updatingContainers = this.updatingContainers.filter((id) => id !== containerId);
-                
-                const newContainer = await DockerService.docker.createContainer(containerConfig);
-
-                // Reattach the remaining networks before starting so DNS
-                // and service discovery work from the first moment.
-                await DockerService.reconnectSecondaryNetworks(endpointsConfig, primaryNetwork, newContainer.id, containerConfig.name);
-
-                await newContainer.start();
 
                 // Get the new container info for MQTT updates
                 const newContainerInfo = await newContainer.inspect();
@@ -448,6 +458,7 @@ export default class DockerService {
               } catch (error) {
                 logger.error("Error starting container with new image");
                 logger.error(error);
+                this.updatingContainers = this.updatingContainers.filter((id) => id !== containerId);
                 throw error;
               }
             },
