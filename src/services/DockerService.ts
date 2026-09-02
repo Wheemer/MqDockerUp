@@ -224,6 +224,65 @@ export default class DockerService {
     return await DockerService.docker.getImage(imageId).inspect();
   }
 
+  /**
+   * Builds the per-network endpoint configuration needed to recreate a
+   * container with all of its network attachments (static IPs, aliases,
+   * links) intact. Docker's create API only honors a single endpoint in
+   * NetworkingConfig, so the primary network (the one matching
+   * HostConfig.NetworkMode, or the first attached network) is returned
+   * separately; the rest must be reconnected after creation.
+   *
+   * @param info - The inspect data of the container being recreated.
+   * @param containerId - The ID of the old container.
+   */
+  public static buildNetworkEndpointsConfig(
+    info: { NetworkSettings?: any; HostConfig?: any },
+    containerId: string
+  ): { endpointsConfig: Record<string, any>; primaryNetwork?: string } {
+    const oldShortId = containerId.substring(0, 12);
+    const endpointsConfig: Record<string, any> = {};
+    for (const [networkName, endpoint] of Object.entries<any>(info.NetworkSettings?.Networks ?? {})) {
+      endpointsConfig[networkName] = {
+        IPAMConfig: endpoint.IPAMConfig ?? undefined,
+        Links: endpoint.Links ?? undefined,
+        // Docker adds the container's short ID as an implicit alias;
+        // drop it so the new container gets its own.
+        Aliases: (endpoint.Aliases ?? []).filter((alias: string) => alias !== oldShortId),
+      };
+    }
+
+    const networkMode = info.HostConfig?.NetworkMode;
+    const primaryNetwork = networkMode && endpointsConfig[networkMode]
+      ? networkMode
+      : Object.keys(endpointsConfig)[0];
+
+    return { endpointsConfig, primaryNetwork };
+  }
+
+  /**
+   * Connects a recreated container to every network in endpointsConfig
+   * except the primary one (already attached at creation). A failed
+   * reconnect is logged but does not abort the update.
+   */
+  public static async reconnectSecondaryNetworks(
+    endpointsConfig: Record<string, any>,
+    primaryNetwork: string | undefined,
+    newContainerId: string,
+    containerName: string
+  ): Promise<void> {
+    for (const networkName of Object.keys(endpointsConfig)) {
+      if (networkName === primaryNetwork) continue;
+      try {
+        await DockerService.docker.getNetwork(networkName).connect({
+          Container: newContainerId,
+          EndpointConfig: endpointsConfig[networkName],
+        });
+      } catch (e) {
+        logger.error(`Failed to reconnect network ${networkName} to container ${containerName}: ${e}`);
+      }
+    }
+  }
+
   public static async updateContainer(containerId: string) {
     try {
       logger.info(`Updating individual container: ${containerId}`);
@@ -270,17 +329,24 @@ export default class DockerService {
 
               logger.info("Image pulled successfully");
 
+              const { endpointsConfig, primaryNetwork } = DockerService.buildNetworkEndpointsConfig(info, containerId);
+
               const containerConfig: any = {
                 ...info,
                 ...info.Config,
                 ...info.HostConfig,
-                ...info.NetworkSettings,
                 // info.Name includes a leading slash, which causes the name
                 // to be dropped when recreating the container. Strip it so the
                 // container keeps its original name after an update.
                 name: info.Name.startsWith("/") ? info.Name.substring(1) : info.Name,
                 Image: image,
               };
+
+              if (primaryNetwork) {
+                containerConfig.NetworkingConfig = {
+                  EndpointsConfig: { [primaryNetwork]: endpointsConfig[primaryNetwork] },
+                };
+              }
 
               // The container will start with a new ID
               containerConfig.Id = "";
@@ -314,6 +380,11 @@ export default class DockerService {
                 this.updatingContainers = this.updatingContainers.filter((id) => id !== containerId);
                 
                 const newContainer = await DockerService.docker.createContainer(containerConfig);
+
+                // Reattach the remaining networks before starting so DNS
+                // and service discovery work from the first moment.
+                await DockerService.reconnectSecondaryNetworks(endpointsConfig, primaryNetwork, newContainer.id, containerConfig.name);
+
                 await newContainer.start();
 
                 // Get the new container info for MQTT updates
