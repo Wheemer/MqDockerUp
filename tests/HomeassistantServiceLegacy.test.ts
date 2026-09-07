@@ -50,12 +50,12 @@ import { ContainerInspectInfo } from "dockerode";
 const DockerService = require("../src/services/DockerService").default;
 const HomeassistantService = require("../src/services/HomeassistantService").default;
 
-describe("HomeassistantService legacy update payload", () => {
+describe("HomeassistantService update payload", () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  test("keeps the legacy nested update state while using container topics", async () => {
+  test("ignores the removed legacy flag while using container topics", async () => {
     const container = {
       Id: "container-one",
       Name: "/esphome",
@@ -83,15 +83,9 @@ describe("HomeassistantService legacy update payload", () => {
       installed_version: "latest: 123456789abc",
       latest_version: "latest: abcdef123456",
       title: "esphome",
-      progress: 40,
-      update: expect.objectContaining({
-        state: "installing",
-        installed_version: "latest: 123456789abc",
-        latest_version: "latest: abcdef123456",
-        progress: 40,
-        remaining: 15,
-      }),
+      update_percentage: 40,
+      in_progress: true,
     }));
-    expect(parsedPayload.update.last_check).toEqual(expect.any(String));
+    expect(parsedPayload.update).toBeUndefined();
   });
 });

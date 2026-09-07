@@ -20,6 +20,7 @@ jest.mock("../src/services/HomeassistantService", () => ({
   default: {
     publishUpdateProgressMessage: jest.fn().mockResolvedValue(undefined),
     publishImageUpdateMessage: jest.fn().mockResolvedValue(undefined),
+    publishContainer: jest.fn().mockResolvedValue(undefined),
     publishMessage: jest.fn(),
   },
 }));
@@ -148,6 +149,20 @@ describe("DockerService.updateContainer", () => {
     DockerService.docker = originalDocker;
   });
 
+  it("ignores duplicate update requests while a container is already updating", async () => {
+    DockerService.updatingContainers = ["busy-container"];
+    DockerService.docker = {
+      getContainer: jest.fn(),
+      pull: jest.fn(),
+    } as any;
+
+    await DockerService.updateContainer("busy-container");
+
+    expect(DockerService.docker.getContainer).not.toHaveBeenCalled();
+    expect(DockerService.docker.pull).not.toHaveBeenCalled();
+    expect(DockerService.updatingContainers).toEqual(["busy-container"]);
+  });
+
   it("waits for pull progress and replacement startup before resolving", async () => {
     let followProgressDone: Function | undefined;
     const updateInfoSpy = jest.spyOn(DockerService, "getImageUpdateInfo").mockResolvedValue({
@@ -164,12 +179,20 @@ describe("DockerService.updateContainer", () => {
         },
         HostConfig: {
           Binds: [],
+          NetworkMode: "bridge",
         },
-        NetworkSettings: {},
+        NetworkSettings: {
+          Networks: {
+            bridge: { Aliases: [] },
+          },
+        },
         Mounts: [],
+        State: { Running: true },
       }),
       stop: jest.fn().mockResolvedValue(undefined),
+      rename: jest.fn().mockResolvedValue(undefined),
       remove: jest.fn().mockResolvedValue(undefined),
+      start: jest.fn().mockResolvedValue(undefined),
     };
     const newContainer = {
       start: jest.fn().mockResolvedValue(undefined),
@@ -212,6 +235,7 @@ describe("DockerService.updateContainer", () => {
     await updatePromise;
 
     expect(oldContainer.stop).toHaveBeenCalled();
+    expect(oldContainer.rename).toHaveBeenCalledWith({ name: "esphome_mqdockerup_old" });
     expect(oldContainer.remove).toHaveBeenCalled();
     expect(newContainer.start).toHaveBeenCalled();
     expect(DockerService.docker.pull).toHaveBeenCalledWith("ghcr.io/esphome/esphome:latest", expect.any(Function));
@@ -236,12 +260,20 @@ describe("DockerService.updateContainer", () => {
         },
         HostConfig: {
           Binds: [],
+          NetworkMode: "bridge",
         },
-        NetworkSettings: {},
+        NetworkSettings: {
+          Networks: {
+            bridge: { Aliases: [] },
+          },
+        },
         Mounts: [],
+        State: { Running: true },
       }),
       stop: jest.fn().mockResolvedValue(undefined),
+      rename: jest.fn().mockResolvedValue(undefined),
       remove: jest.fn().mockResolvedValue(undefined),
+      start: jest.fn().mockResolvedValue(undefined),
     };
     const newContainer = {
       start: jest.fn().mockResolvedValue(undefined),
@@ -280,6 +312,7 @@ describe("DockerService.updateContainer", () => {
       Image: "ghcr.io/blakeblackshear/frigate:0.17.2",
     }));
     expect(oldContainer.stop).toHaveBeenCalled();
+    expect(oldContainer.rename).toHaveBeenCalledWith({ name: "frigate_mqdockerup_old" });
     expect(oldContainer.remove).toHaveBeenCalled();
     expect(newContainer.start).toHaveBeenCalled();
     updateInfoSpy.mockRestore();

@@ -38,7 +38,7 @@ MqDockerUp uses Docker Registry APIs (DockerHub/GHCR/LSCR) to get information ab
   * Path required to store the data (database.db): `your/path/data:/app/data/` 
   * Path required if you want to use yaml config: `your/path/config.yaml:/app/config.yaml`  
 
-Use `ghcr.io/wheemer/mqdockerup:2.0.0` to pin this release, or `ghcr.io/wheemer/mqdockerup:latest` to track the newest published release.
+Use `ghcr.io/wheemer/mqdockerup:2.2.1` to pin this release, or `ghcr.io/wheemer/mqdockerup:latest` to track the newest published release.
 
 ## Configuration
 
@@ -54,6 +54,9 @@ The main configuration is specified in the `main` section of `config.yaml`:
 | `containerCheckOnChanges` | `MAIN_CONTAINERCHECKONCHANGES` | `boolean` | `true` | Trigger a container check when Docker emits container lifecycle events (`create`, `start`, `stop`, `destroy`, etc.). Set to `false` to only use the interval check. Recommended for environments with many containers to reduce MQTT message traffic. |
 |    `updateCheckInterval` |  `MAIN_UPDATECHECKINTERVAL`   | `string` |  `""`   | The interval at which updates are checked and published/republished to the MQTT broker, must be in the format`[number][unit]`, where `[number]` is a positive integer and [`[unit]`](#unit) <br> (same of containerCheckInterval if `""`). |
 |                 `prefix` |         `MAIN_PREFIX`         | `string` |  `""`   | Parameter specifies a prefix to add to the MQTT topic when publishing updates. Enabling you to have multiple instances of MqDockerUp publishing to the same MQTT broker without conflicts.                                            |
+
+> [!WARNING]
+> **Breaking change in v2.2.0:** `mqtt.haLegacy`/`MQTT_HALEGACY` has been removed. The update entity now always uses the Home Assistant 2024.11+ format (`in_progress`/`update_percentage`). Home Assistant versions older than 2024.11 are no longer supported; the option is ignored with a warning if still set.
 
 > [!WARNING] 
 > If you upgrade from version 1.14.0 (or lower), some name are changed:
@@ -83,8 +86,7 @@ The MQTT configuration is specified in the `mqtt` section of `config.yaml`:
 |        `clientId` |    `MQTT_CLIENTID`     | `string`  |      `mqdockerup`       | The MQTT client ID to use when connecting to the broker.                                                |
 |        `username` |    `MQTT_USERNAME`     | `string`  |          `ha`           | The username to use when connecting to the MQTT broker.                                                 |
 |        `password` |    `MQTT_PASSWORD`     | `string`  |          `""`           | The password to use when connecting to the MQTT broker.                                                 |
-|        `haLegacy` |    `MQTT_HALEGACY`     | `boolean` |         `false`         | The way MqDockerUp creates the update entity, `false` for HA 2024.11+ and `true` for previous versions. |
-|  `connectTimeout` | `MQTT_CONNECTTIMEOUT`  |   `int`   |          `60`           | The maximum time, in seconds, to wait for a successful connection to the MQTT broker.                   |
+|  `connectTimeout` | `MQTT_CONNECTTIMEOUT`  |   `int`   |          `60`           | The maximum time, in seconds, to wait for the broker to acknowledge the connection (CONNACK).                   |
 | `protocolVersion` | `MQTT_PROTOCOLVERSION` |   `int`   |           `5`           | The MQTT protocol version to use when connecting to the broker.                                         |
 | `maxReconnectDelay` | `MQTT_MAXRECONNECTDELAY` | `int` |          `300`          | The maximum time, in seconds, between reconnection attempts when disconnected from the MQTT broker.     |
 
@@ -160,7 +162,6 @@ mqtt:
   clientId: "mqdockerup"
   username: "ha"
   password: "12345678"
-  haLegacy: false
   connectTimeout: 60
   protocolVersion: 5
 accessTokens:
@@ -196,7 +197,6 @@ docker run -d \
   -e MQTT_CLIENTID="mqdockerup" \
   -e MQTT_USERNAME="ha" \
   -e MQTT_PASSWORD="" \
-  -e MQTT_HALEGACY=false \
   -e MQTT_CONNECTTIMEOUT=60 \
   -e MQTT_PROTOCOLVERSION=5 \
   -e ACCESSTOKENS_DOCKERHUB="" \
@@ -209,7 +209,7 @@ docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v your/path/data:/app/data/ \
   -v your/path/config.yaml:/app/config.yaml \
-  ghcr.io/wheemer/mqdockerup:2.0.0
+  ghcr.io/wheemer/mqdockerup:2.2.1
 ```
 
 ### <a name="compose"></a>Docker Compose
@@ -217,7 +217,7 @@ docker run -d \
 ```yaml
 services:
   mqdockerup:
-    image: ghcr.io/wheemer/mqdockerup:2.0.0
+    image: ghcr.io/wheemer/mqdockerup:2.2.1
     container_name: mqdockerup
     hostname: mqdockerup
     restart: always
@@ -233,7 +233,6 @@ services:
       MQTT_CLIENTID: "mqdockerup"
       MQTT_USERNAME: "ha"
       MQTT_PASSWORD: ""
-      MQTT_HALEGACY : false
       MQTT_CONNECTTIMEOUT: 60
       MQTT_PROTOCOLVERSION: 5
       ACCESSTOKENS_DOCKERHUB: ""

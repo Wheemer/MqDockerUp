@@ -9,7 +9,6 @@ import MqttCommandService, {ContainerCommand} from "./MqttCommandService";
 const config = ConfigService.getConfig();
 const packageJson = require("../../package");
 
-const haLegacy = ConfigService.autoParseEnvVariable(config.mqtt?.haLegacy)
 const suggestedArea = config.mqtt?.suggestedArea ?? "Docker";
 
 type DiscoveryDevice = {
@@ -73,6 +72,7 @@ const buttonDiscoveries: ButtonDiscovery[] = [
 
 export default class HomeassistantService {
   private static readonly safeNameRegex = /[\/.:;,+*?@^$%#!&"'`|<>{}\[\]()-\s\u0000-\u001F\u007F]/g;
+  private static lastRetainedPayloads = new Map<string, string>();
 
   private static formatSafeName(value: string, replacement: string = "_"): string {
     return value.replace(this.safeNameRegex, replacement);
@@ -136,6 +136,10 @@ export default class HomeassistantService {
     }
   }
 
+  public static resetPublishCache() {
+    this.lastRetainedPayloads.clear();
+  }
+
   private static createButtonPayload(
     name: string,
     imageReference: string,
@@ -177,10 +181,15 @@ export default class HomeassistantService {
    * Publishes the messages to the MQTT broker
    * @param client The MQTT client
    */
-  public static async publishConfigMessages(client: any) {
-    const containers = await DockerService.listContainers();
+  public static async publishConfigMessages(client: any, containers?: ContainerInspectInfo[]) {
+    containers ??= await DockerService.listContainers();
 
     for (const container of containers) {
+      await this.publishContainerDiscovery(client, container);
+    }
+  }
+
+  public static async publishContainerDiscovery(client: any, container: ContainerInspectInfo) {
       const identity = this.getContainerIdentity(container);
 
       if (!await DatabaseService.containerExists(container.Id)) {
@@ -241,7 +250,6 @@ export default class HomeassistantService {
       }
 
       this.removeStaleDiscoveryTopics(client, container.Id, currentTopics);
-    }
   }
 
 
@@ -249,8 +257,8 @@ export default class HomeassistantService {
    * Publishes the device message to the MQTT broker
    * @param client The MQTT client
    */
-  public static async publishContainerMessages(client: any) {
-    const containers: ContainerInspectInfo[] = await DockerService.listContainers();
+  public static async publishContainerMessages(client: any, containers?: ContainerInspectInfo[]) {
+    containers ??= await DockerService.listContainers();
 
     for (const container of containers) {
       // Publish Device message (for HA)
@@ -262,8 +270,8 @@ export default class HomeassistantService {
    * Publishes update messages to the MQTT broker
    * @param client The MQTT client
    */
-  public static async publishImageUpdateMessages(client: any) {
-    const containers: ContainerInspectInfo[] = await DockerService.listContainers();
+  public static async publishImageUpdateMessages(client: any, containers?: ContainerInspectInfo[]) {
+    containers ??= await DockerService.listContainers();
 
     for (const container of containers) {
       // Publish update message (for HA)
@@ -281,6 +289,36 @@ export default class HomeassistantService {
     }
   }
 
+  public static async publishContainer(client: any, container: ContainerInspectInfo) {
+    await this.publishContainerDiscovery(client, container);
+    await this.publishContainerMessage(container, client);
+  }
+
+  public static async removeContainer(client: any, containerId: string): Promise<boolean> {
+    if (!(await DatabaseService.containerExists(containerId))) {
+      return false;
+    }
+
+    await new Promise<void>((resolve) => {
+      DatabaseService.getTopics(containerId, (err: any, topics: any[]) => {
+        if (err) {
+          logger.error("Error getting topics for cleanup: " + err);
+          resolve();
+          return;
+        }
+
+        for (const topic of topics) {
+          this.publishMessage(client, topic.topic, "", { retain: true, qos: 0 });
+        }
+
+        resolve();
+      });
+    });
+
+    await DatabaseService.deleteContainer(containerId);
+    return true;
+  }
+
   /**
    * Publishes the device message to the MQTT broker
    * @param client The MQTT client
@@ -288,12 +326,20 @@ export default class HomeassistantService {
    * @param payload The payload to publish
    * @param configObject The config object
    */
-  public static async publishMessage(client: any, topic: string, payload: object | string, configObject: object) {
-    if (typeof payload != "string") {
-      payload = JSON.stringify(payload);
+  public static async publishMessage(client: any, topic: string, payload: object | string, configObject: { retain?: boolean; qos?: 0 | 1 | 2 } = {}) {
+    const body = typeof payload === "string" ? payload : JSON.stringify(payload);
+
+    if (configObject.retain) {
+      if (body === "") {
+        this.lastRetainedPayloads.delete(topic);
+      } else if (this.lastRetainedPayloads.get(topic) === body) {
+        return;
+      } else {
+        this.lastRetainedPayloads.set(topic, body);
+      }
     }
 
-    client.publish(topic, payload, configObject);
+    client.publish(topic, body, configObject);
   }
 
   public static createPayload(
@@ -521,47 +567,16 @@ export default class HomeassistantService {
         logger.debug(`No source repository metadata found for ${identity.image}`);
       }
 
-      let updatePayload: any;
-      if (haLegacy) {
-        updatePayload = {
-          installed_version: installedVersion,
-          latest_version: newDigest ? latestVersion : null,
-          release_notes: null,
-          release_url: null,
-          entity_picture: null,
-          title: identity.displayName,
-          progress: 0,
-          update: {
-            state: currentDigest && newDigest && currentDigest !== newDigest ? "available" : "idle",
-            installed_version: installedVersion,
-            latest_version: newDigest ? latestVersion : null,
-            last_check: new Date().toISOString(),
-            progress: 0,
-            remaining: 0,
-          },
-        };
-
-        if (update_percentage !== null && remaining !== null) {
-          updatePayload.update.progress = update_percentage;
-          updatePayload.progress = update_percentage;
-          updatePayload.update.remaining = remaining;
-
-          if (state) {
-            updatePayload.update.state = state;
-          }
-        }
-      } else {
-        updatePayload = {
-          installed_version: installedVersion,
-          latest_version: newDigest ? latestVersion : null,
-          release_summary: "",
-          release_url: `${sourceRepo ? sourceRepo : "https://github.com/MichelFR/MqDockerUp"}/releases`,
-          entity_picture: "https://raw.githubusercontent.com/MichelFR/MqDockerUp/refs/heads/main/assets/logo_200x200.png",
-          title: identity.displayName,
-          update_percentage: update_percentage,
-          in_progress: update_percentage !== null && remaining !== null,
-        };
-      }
+      const updatePayload = {
+        installed_version: installedVersion,
+        latest_version: newDigest ? latestVersion : null,
+        release_summary: "",
+        release_url: `${sourceRepo ? sourceRepo : "https://github.com/MichelFR/MqDockerUp"}/releases`,
+        entity_picture: "https://raw.githubusercontent.com/MichelFR/MqDockerUp/refs/heads/main/assets/logo_200x200.png",
+        title: identity.displayName,
+        update_percentage: update_percentage,
+        in_progress: update_percentage !== null && remaining !== null,
+      };
 
       this.publishMessage(client, updateTopic, updatePayload, {retain: true});
       if (log) logger.info(`Published update message for ${identity.imageReference}`);

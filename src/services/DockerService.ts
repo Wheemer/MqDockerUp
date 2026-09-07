@@ -9,18 +9,6 @@ import DatabaseService from "./DatabaseService";
 import axios, { AxiosInstance } from 'axios';
 import {mqttClient} from "../index";
 
-// Add interface for mount types
-interface DockerMount {
-  Name?: string;
-  Type: 'bind' | 'volume' | 'tmpfs';
-  Source: string;
-  Destination: string;
-  Driver?: string;
-  Mode: string;
-  RW: boolean;
-  Propagation: string;
-}
-
 /**
  * Represents a Docker service for managing Docker containers and images.
  */
@@ -28,6 +16,7 @@ export default class DockerService {
   public static docker = new Docker();
   public static events = new EventEmitter();
   public static updatingContainers: string[] = [];
+  /** Source repository URL per image reference; null marks a lookup that found nothing. */
   public static SourceUrlCache = new Map<string, string | null>();
   public static VersionLabelCache = new Map<string, string | null>();
 
@@ -136,6 +125,28 @@ export default class DockerService {
 
 
   /**
+   * Returns the inspect information for a single container, or null if it no
+   * longer exists or is excluded by the ignore rules.
+   *
+   * @param containerId - The ID of the container.
+   */
+  public static async getMonitoredContainer(containerId: string): Promise<ContainerInspectInfo | null> {
+    const [container] = await DockerService.docker.listContainers({all: true, filters: {id: [containerId]}});
+    if (!container || IgnoreService.ignoreContainer(container)) {
+      return null;
+    }
+
+    try {
+      return await DockerService.docker.getContainer(container.Id).inspect();
+    } catch (err: any) {
+      if (err.statusCode === 404) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /**
    * Gets the Docker image registry for the specified image name.
    *
    * @param imageName - The name of the Docker image.
@@ -166,6 +177,7 @@ export default class DockerService {
         newDigest: response.newDigest,
         tag: response.tag || tag,
       };
+      
     } catch (error: any) {
       logger.error(imageName, tag);
       logger.error(error);
@@ -233,7 +245,6 @@ export default class DockerService {
    * @throws An error if the source repository could not be found.
    */
   public static async getSourceRepo(imageName: string, imageTag: string): Promise<string | null> {
-    // Check cache first
     const imageTagCacheKey = imageName + ":" + imageTag;
     if (DockerService.SourceUrlCache.has(imageTagCacheKey)) {
       return DockerService.SourceUrlCache.get(imageTagCacheKey) ?? null;
@@ -243,12 +254,10 @@ export default class DockerService {
       return DockerService.SourceUrlCache.get(imageName) ?? null;
     }
 
-    // Try method 1: Check Docker labels
     const labels = await DockerService.getImageInfo(imageName + ":" + imageTag).then(
       (info) => info.Config.Labels
     ).catch((error) => {
-      logger.error("Error getting image info:", error
-      );
+      logger.error("Error getting image info:", error);
     });
 
     if (labels && labels["org.opencontainers.image.source"]) {
@@ -262,7 +271,6 @@ export default class DockerService {
       return null;
     }
 
-    // Try method 2: Check Docker Hub API
     const dockerHubRepo = this.getDockerHubRepositoryPath(imageName);
     const dockerHubUrl = `https://hub.docker.com/v2/repositories/${dockerHubRepo}`;
     const response = await axios.get(dockerHubUrl).catch((error) => {
@@ -289,8 +297,6 @@ export default class DockerService {
       }
 
       const url = this.parseGithubUrl(fullDescription);
-
-      // Cache URL
       if (url !== null) {
         DockerService.SourceUrlCache.set(imageName, url);
         return url;
@@ -311,12 +317,78 @@ export default class DockerService {
     return await DockerService.docker.getImage(imageId).inspect();
   }
 
+  /**
+   * Builds the per-network endpoint configuration needed to recreate a
+   * container with all of its network attachments (static IPs, aliases,
+   * links) intact. Docker's create API only honors a single endpoint in
+   * NetworkingConfig, so the primary network (the one matching
+   * HostConfig.NetworkMode, or the first attached network) is returned
+   * separately; the rest must be reconnected after creation.
+   *
+   * @param info - The inspect data of the container being recreated.
+   * @param containerId - The ID of the old container.
+   */
+  public static buildNetworkEndpointsConfig(
+    info: { NetworkSettings?: any; HostConfig?: any },
+    containerId: string
+  ): { endpointsConfig: Record<string, any>; primaryNetwork?: string } {
+    const oldShortId = containerId.substring(0, 12);
+    const endpointsConfig: Record<string, any> = {};
+    for (const [networkName, endpoint] of Object.entries<any>(info.NetworkSettings?.Networks ?? {})) {
+      endpointsConfig[networkName] = {
+        IPAMConfig: endpoint.IPAMConfig ?? undefined,
+        Links: endpoint.Links ?? undefined,
+        // Docker adds the container's short ID as an implicit alias;
+        // drop it so the new container gets its own.
+        Aliases: (endpoint.Aliases ?? []).filter((alias: string) => alias !== oldShortId),
+      };
+    }
+
+    const networkMode = info.HostConfig?.NetworkMode;
+    const primaryNetwork = networkMode && endpointsConfig[networkMode]
+      ? networkMode
+      : Object.keys(endpointsConfig)[0];
+
+    return { endpointsConfig, primaryNetwork };
+  }
+
+  /**
+   * Connects a recreated container to every network in endpointsConfig
+   * except the primary one (already attached at creation). A failed
+   * reconnect is logged but does not abort the update.
+   */
+  public static async reconnectSecondaryNetworks(
+    endpointsConfig: Record<string, any>,
+    primaryNetwork: string | undefined,
+    newContainerId: string,
+    containerName: string
+  ): Promise<void> {
+    for (const networkName of Object.keys(endpointsConfig)) {
+      if (networkName === primaryNetwork) continue;
+      try {
+        await DockerService.docker.getNetwork(networkName).connect({
+          Container: newContainerId,
+          EndpointConfig: endpointsConfig[networkName],
+        });
+      } catch (e) {
+        logger.error(`Failed to reconnect network ${networkName} to container ${containerName}: ${e}`);
+      }
+    }
+  }
+
   public static async updateContainer(containerId: string) {
+    if (this.updatingContainers.includes(containerId)) {
+      logger.warn(`Container ${containerId} is already updating; ignoring duplicate update request`);
+      return;
+    }
+
+    this.markContainerUpdating(containerId);
+
     try {
       logger.info(`Updating individual container: ${containerId}`);
 
       const container = DockerService.docker.getContainer(containerId);
-
+      
       let info = null
       try {
         info = await container.inspect();
@@ -348,72 +420,105 @@ export default class DockerService {
         const layerProgress: Record<string, { current: number; total: number }> = {};
         let lastPublishTime = 0;
 
-        this.markContainerUpdating(containerId);
-
         await new Promise<void>((resolve, reject) => {
-          DockerService.docker.pull(targetImage, (err: any, stream: any) => {
-            logger.info("Pulling image: " + targetImage);
-            if (err) {
-              logger.error("Pulling Error: " + err);
-              this.unmarkContainerUpdating(containerId);
-              reject(err);
-              return;
-            }
+        DockerService.docker.pull(targetImage, async (err: any, stream: any) => {
+          logger.info("Pulling image: " + targetImage);
+          if (err) {
+            logger.error("Pulling Error: " + err);
+            reject(err);
+            return;
+          }
 
-            DockerService.docker.modem.followProgress(
-              stream,
-              async (err: any) => {
-                if (err) {
-                  logger.error("Stream Error: " + err);
-                  this.unmarkContainerUpdating(containerId);
-                  reject(err);
-                  return;
-                }
+          DockerService.docker.modem.followProgress(
+            stream,
+            async (err: any) => {
+              if (err) {
+                logger.error("Stream Error: " + err);
+                reject(err);
+                return;
+              }
 
-                logger.info("Image pulled successfully");
+              logger.info("Image pulled successfully");
 
-                const containerConfig: any = {
-                  ...info,
-                  ...info.Config,
-                  ...info.HostConfig,
-                  ...info.NetworkSettings,
-                  // info.Name includes a leading slash, which causes the name
-                  // to be dropped when recreating the container. Strip it so the
-                  // container keeps its original name after an update.
-                  name: info.Name.startsWith("/") ? info.Name.substring(1) : info.Name,
-                  Image: targetImage,
+              const { endpointsConfig, primaryNetwork } = DockerService.buildNetworkEndpointsConfig(info, containerId);
+
+              const containerConfig: any = {
+                ...info,
+                ...info.Config,
+                ...info.HostConfig,
+                // info.Name includes a leading slash, which causes the name
+                // to be dropped when recreating the container. Strip it so the
+                // container keeps its original name after an update.
+                name: info.Name.startsWith("/") ? info.Name.substring(1) : info.Name,
+                Image: targetImage,
+              };
+
+              if (primaryNetwork) {
+                containerConfig.NetworkingConfig = {
+                  EndpointsConfig: { [primaryNetwork]: endpointsConfig[primaryNetwork] },
                 };
+              }
 
               // The container will start with a new ID
               containerConfig.Id = "";
 
-              const mounts = info.Mounts as DockerMount[];
-              // Handle different mount types properly
-              const binds: string[] = [];
-              const volumes: { [key: string]: {} } = {};
-
-              mounts.forEach((mount) => {
-                if (mount.Type === 'bind') {
-                  binds.push(`${mount.Source}:${mount.Destination}${mount.Mode ? ':' + mount.Mode : ''}`);
-                } else if (mount.Type === 'volume') {
-                  // For named volumes, we just need to ensure they're in the volumes configuration
-                  const volumeName = mount.Name || mount.Source;
-                  volumes[volumeName] = {};
-                }
-              });
-
-              containerConfig.HostConfig.Binds = binds;
-              containerConfig.Volumes = volumes;
+              // Mounts need no special handling: info.HostConfig.Binds and
+              // info.HostConfig.Mounts are passed through verbatim, which
+              // preserves bind mounts, named volumes, tmpfs, and all their
+              // flags exactly as the container was created with.
 
               logger.debug(`Container config prepared for update: ${JSON.stringify(containerConfig, null, 2)}`);
 
 
+              const wasRunning = info.State?.Running === true;
+              let newContainer: Docker.Container | undefined;
+              try {
+                // Stop the old container, tolerating one that is already
+                // stopped (Docker answers 304 in that case).
                 try {
                   await container.stop();
-                  await container.remove();
+                } catch (err: any) {
+                  if (err.statusCode !== 304) {
+                    throw err;
+                  }
+                }
 
-                  const newContainer = await DockerService.docker.createContainer(containerConfig);
+                // Rename the old container out of the way instead of removing
+                // it, so a failed creation can be rolled back without losing
+                // the container.
+                const backupName = `${containerConfig.name}_mqdockerup_old`;
+                await container.rename({ name: backupName });
+
+                try {
+                  newContainer = await DockerService.docker.createContainer(containerConfig);
+
+                  // Reattach the remaining networks before starting so DNS
+                  // and service discovery work from the first moment.
+                  await DockerService.reconnectSecondaryNetworks(endpointsConfig, primaryNetwork, newContainer.id, containerConfig.name);
+
                   await newContainer.start();
+                } catch (error) {
+                  logger.error(`Failed to recreate container ${containerConfig.name}, rolling back to the old container`);
+                  try {
+                    if (newContainer) {
+                      await newContainer.remove({ force: true });
+                    }
+                    await container.rename({ name: containerConfig.name });
+                    if (wasRunning) {
+                      await container.start();
+                    }
+                  } catch (rollbackError) {
+                    logger.error(`Rollback of container ${containerConfig.name} failed: ${rollbackError}`);
+                  }
+                  throw error;
+                }
+
+                // The new container is up — the old one can go now. Forget it
+                // in the database first: its discovery topics are keyed by
+                // container name and live on for the new container, so they
+                // must not be cleared when the destroy event arrives.
+                await DatabaseService.deleteContainer(containerId);
+                await container.remove();
 
                 // Get the new container info for MQTT updates
                 const newContainerInfo = await newContainer.inspect();
@@ -442,83 +547,60 @@ export default class DockerService {
                 // Publish final 100% progress with the NEW container info
                 await HomeassistantService.publishUpdateProgressMessage(newContainerInfo, mqttClient, 100, false);
 
-                // Clean up old container from Home Assistant and database
-                const {image: newImage, tag: newTag} = DockerService.splitImageReference(newContainerInfo.Config?.Image);
-                const newName = newContainerInfo.Name.startsWith("/") ? newContainerInfo.Name.substring(1) : newContainerInfo.Name;
+                // Publish the new container under the (unchanged) device name
+                // and report it as up-to-date.
+                await HomeassistantService.publishContainer(mqttClient, newContainerInfo);
+                await HomeassistantService.publishImageUpdateMessage(newContainerInfo, mqttClient);
 
-                // Get topics for old container and publish empty messages to remove from HA
-                await new Promise<void>((resolve) => {
-                  DatabaseService.getTopics(containerId, (err: any, topics: any) => {
-                    if (err) {
-                      logger.error("Error getting topics for cleanup: " + err);
-                      resolve();
-                      return;
-                    }
+                resolve();
+              } catch (error) {
+                logger.error("Error starting container with new image");
+                logger.error(error);
+                reject(error);
+              }
+            },
+            (event) => {
+              logger.debug(`Status: ${event.status}`);
 
-                    // Publish empty messages to all old topics
-                    topics.forEach((topic: any) => {
-                      HomeassistantService.publishMessage(mqttClient, topic.topic, "", { retain: true, qos: 0 });
-                    });
+              if (event.id) {
+                const layer = layerProgress[event.id] || { current: 0, total: 0 };
 
-                    resolve();
-                  });
-                });
-
-                // Now remove old container from database and add new one
-                await DatabaseService.deleteContainer(containerId);
-                await DatabaseService.addContainer(newContainerInfo.Id, newName, newImage, newTag);
-
-                  // Republish update message to show as up-to-date
-                  await HomeassistantService.publishImageUpdateMessage(newContainerInfo, mqttClient);
-
-                  this.unmarkContainerUpdating(containerId);
-                  resolve();
-                } catch (error) {
-                  logger.error("Error starting container with new image");
-                  logger.error(error);
-                  this.unmarkContainerUpdating(containerId);
-                  reject(error);
+                if (event.progressDetail && (event.progressDetail.current || event.progressDetail.total)) {
+                  layer.current = event.progressDetail.current || layer.current;
+                  layer.total = event.progressDetail.total || layer.total;
                 }
-              },
-              (event) => {
-                logger.debug(`Status: ${event.status}`);
 
-                if (event.id) {
-                  const layer = layerProgress[event.id] || { current: 0, total: 0 };
+                if (["Pull complete", "Download complete", "Already exists"].includes(event.status)) {
+                  layer.current = layer.total || layer.current;
+                }
 
-                  if (event.progressDetail && (event.progressDetail.current || event.progressDetail.total)) {
-                    layer.current = event.progressDetail.current || layer.current;
-                    layer.total = event.progressDetail.total || layer.total;
-                  }
+                layerProgress[event.id] = layer;
 
-                  if (["Pull complete", "Download complete", "Already exists"].includes(event.status)) {
-                    layer.current = layer.total || layer.current;
-                  }
+                const totalCurrent = Object.values(layerProgress).reduce((acc, l) => acc + l.current, 0);
+                const totalSize = Object.values(layerProgress).reduce((acc, l) => acc + l.total, 0);
 
-                  layerProgress[event.id] = layer;
+                if (totalSize > 0) {
+                  const percentage = Math.min(100, Math.round((totalCurrent / totalSize) * 100));
+                  logger.debug(`Total progress: ${totalCurrent}/${totalSize} (${percentage}%)`);
 
-                  const totalCurrent = Object.values(layerProgress).reduce((acc, l) => acc + l.current, 0);
-                  const totalSize = Object.values(layerProgress).reduce((acc, l) => acc + l.total, 0);
-
-                  if (totalSize > 0) {
-                    const percentage = Math.min(100, Math.round((totalCurrent / totalSize) * 100));
-                    logger.debug(`Total progress: ${totalCurrent}/${totalSize} (${percentage}%)`);
-
-                    const now = Date.now();
-                    if (now - lastPublishTime >= 1000) {
-                      lastPublishTime = now;
-                      HomeassistantService.publishUpdateProgressMessage(info, mqttClient, percentage, true);
-                    }
+                  const now = Date.now();
+                  if (now - lastPublishTime >= 1000) {
+                    lastPublishTime = now;
+                    HomeassistantService.publishUpdateProgressMessage(info, mqttClient, percentage, true);
                   }
                 }
               }
-            );
-          });
+            }
+          );
+        });
         });
       }
     } catch (error: any) {
       logger.error("Error updating container");
       logger.error(error);
+      throw error;
+    } finally {
+      this.unmarkContainerUpdating(containerId);
     }
   }
 
