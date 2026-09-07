@@ -19,7 +19,8 @@ const client = mqtt.connect(config.mqtt.connectionUri, {
   username: config.mqtt.username,
   password: config.mqtt.password,
   protocolVersion: ConfigService.autoParseEnvVariable(config.mqtt.protocolVersion),
-  connectTimeout: ConfigService.autoParseEnvVariable(config.mqtt.connectTimeout),
+  // mqtt.js expects milliseconds; the config value is documented in seconds.
+  connectTimeout: Number(ConfigService.autoParseEnvVariable(config.mqtt.connectTimeout) ?? 60) * 1000,
   clientId: config.mqtt.clientId,
   reconnectPeriod: 5000,
   rejectUnauthorized: false,
@@ -174,8 +175,10 @@ client.on('close', () => {
   isConnected = false;
 });
 
+// Connection errors (e.g. "connack timeout") are recoverable: mqtt.js reconnects
+// on its own every `reconnectPeriod` ms, so only log them instead of exiting.
 client.on('error', function (err) {
-  logger.error('MQTT client connection error: ', err);
+  logger.error(`MQTT client connection error: ${err.message}. Retrying in ${(client.options.reconnectPeriod ?? 5000) / 1000}s...`);
 });
 
 client.on("message", async (topic: string, message: any) => {
@@ -311,7 +314,6 @@ const exitHandler = async (exitCode: number, error?: any) => {
   }
 };
 
-client.on("error", (error) => exitHandler(1, error));
 process.on("SIGINT", () => exitHandler(0));
 process.on("SIGTERM", () => exitHandler(0));
 process.on("uncaughtException", (error) => exitHandler(1, error));
